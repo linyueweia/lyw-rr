@@ -100,14 +100,20 @@ jobs:
           for l in 'KERNELS=="fe2a0000.ethernet", NAME:="eth0"' \
                    'KERNELS=="0000:01:00.0", NAME:="eth1"' \
                    'KERNELS=="0001:11:00.0", NAME:="eth2"'; do
-            grep -q "$l" build/config/boards/nanopi-r5s.csc \
+            grep -qF "$l" build/config/boards/nanopi-r5s.csc \
               || { echo "!! csc 缺 udev 规则: $l"; exit 1; }
           done
-          grep -q '^DEFAULT_INTERFACE=eth2$' build/config/boards/nanopi-r5s.csc \
+          # 注意：csc 是 shell 源码，断言用【子串】而不是 ^…$ 锚定行（曾因此在注入步骤白挂一次）
+          grep -qF 'DEFAULT_INTERFACE=eth2' build/config/boards/nanopi-r5s.csc \
             || { echo "!! csc 的默认口不是 eth2"; exit 1; }
-          grep -qE 'NAME:="(wan1|lan1|lan2)"' build/config/boards/nanopi-r5s.csc \
-            && { echo "!! csc 里仍残留上游 wan1/lan1/lan2 命名"; exit 1; } || true
-          grep -q 'ethernet0 = &gmac0' build/config/boards/nanopi-r5s.csc || true
+          grep -qF 'fe2a0000.ethernet,0000:01:00.0,0001:11:00.0' build/config/boards/nanopi-r5s.csc \
+            || { echo "!! csc 的 /etc/eth_order 内容不是 eth0/eth1/eth2 三口的顺序"; exit 1; }
+          grep -qF 'After=istorenext-init-network.service networking.service' build/config/boards/nanopi-r5s.csc \
+            || { echo "!! csc 缺 NetworkManager 排序 drop-in"; exit 1; }
+          if grep -qE 'NAME:="(wan1|lan1|lan2)"' build/config/boards/nanopi-r5s.csc; then
+            echo "!! csc 里仍残留上游 wan1/lan1/lan2 命名"; exit 1
+          fi
+          echo "csc 注入自检全部通过"
 
       - name: Install NanoPi R5S extensions (adapted)
         if: github.event.inputs.profile != 'official'
