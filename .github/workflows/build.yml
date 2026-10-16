@@ -154,6 +154,39 @@ jobs:
           sudo apt-get clean
           df -h /
 
+      # ── 自证脚本自测（几秒，防"构建 2 小时后才发现脚本的分区假设是错的"）──────
+      # 造两个微型镜像（单分区 rootfs / 双分区 bootfs+rootfs），只跑 verify-image.sh
+      # 的布局探测并断言判定结果 —— 覆盖 iNextOS 的两种官方分区布局。
+      - name: Self-test image layout detection (mock images)
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/mock" && cd "$RUNNER_TEMP/mock"
+          chmod +x "$GITHUB_WORKSPACE/rr/tools/verify-image.sh"
+          probe() { sudo -E bash "$GITHUB_WORKSPACE/rr/tools/verify-image.sh" --probe "$1"; }
+          sudo mkdir -p /mnt/ib /mnt/ir
+
+          # ① 单分区（= 本板上游 nanopi-r5s 官方路径，同官方 H88K 镜像）
+          truncate -s 96M one.img
+          parted -s one.img mklabel gpt >/dev/null
+          parted -s one.img mkpart rootfs ext4 16MiB 100% >/dev/null
+          L=$(sudo losetup --show -f -P one.img); sudo mkfs.ext4 -qF "${L}p1"; sudo losetup -d "$L"
+          OUT1=$(probe one.img); echo "$OUT1"
+          echo "$OUT1" | grep -q 'LAYOUT rootfs=[^ ]*p1 bootfs=none ' \
+            || { echo "!! 单分区布局判定错（应 rootfs=p1 / bootfs=none）"; exit 1; }
+
+          # ② 双分区（= 官方 easepi-r1 布局：csc 里 BOOTFS_TYPE="fat"）
+          truncate -s 160M two.img
+          parted -s two.img mklabel gpt >/dev/null
+          parted -s two.img mkpart bootfs fat32 16MiB 96MiB >/dev/null
+          parted -s two.img mkpart rootfs ext4 96MiB 100% >/dev/null
+          L=$(sudo losetup --show -f -P two.img); sudo mkfs.vfat "${L}p1" >/dev/null; sudo mkfs.ext4 -qF "${L}p2"; sudo losetup -d "$L"
+          OUT2=$(probe two.img); echo "$OUT2"
+          echo "$OUT2" | grep -q 'LAYOUT rootfs=[^ ]*p2 bootfs=[^ ]*p1 ' \
+            || { echo "!! 双分区布局判定错（应 rootfs=p2 / bootfs=p1）"; exit 1; }
+
+          echo "布局探测自测通过（单分区 / 双分区两种官方布局都认得）"
+          rm -f one.img two.img
+
       - name: Build iNextOS image
         run: |
           cd build
@@ -176,19 +209,13 @@ jobs:
             SHARE_LOG=yes \
             EXPERT=yes
 
-      - name: Post-process verification (image self-check)
-        run: |
-          set -e
-          IMG=$(ls build/output/images/*.img | head -n1)
-          echo "IMG=$IMG"
-          chmod +x rr/tools/verify-image.sh
-          sudo -E bash rr/tools/verify-image.sh "$IMG" "$PROFILE"
-
       - name: Show outputs
         run: |
           ls -lh build/output/images/ || true
           cat build/output/images/*.sha 2>/dev/null || true
 
+      # 上传放在自证【之前】：自证失败也不能白造一个镜像
+      # （2026-10-16 run #4 的教训 —— 117 分钟构建出的镜像因自证误报没上传，连诊断素材都没有）
       - name: Upload iNextOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -198,3 +225,11 @@ jobs:
             build/output/images/*.sha
           retention-days: 14
           if-no-files-found: error
+
+      - name: Post-process verification (image self-check)
+        run: |
+          set -e
+          IMG=$(ls build/output/images/*.img | head -n1)
+          echo "IMG=$IMG"
+          chmod +x rr/tools/verify-image.sh
+          sudo -E bash rr/tools/verify-image.sh "$IMG" "$PROFILE"

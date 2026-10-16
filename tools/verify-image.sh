@@ -6,17 +6,35 @@
 #   adapted  —— 本仓适配层（默认）：跑全部判据
 #   official —— 纯官方基线（上游 csc + istorenext）：只跑"底座"判据，
 #               跳过本仓适配层（roceos/EEE/角色/口名钉定）
+#   --probe  —— 只探测分区布局并打印 LAYOUT 行（几秒），供 CI 前置自测使用
 #
 # 设计原则（照 board-image-forensics 技能）：
 #   · 每个断言都指向一个【可复现的失败后果】，不是"文件存在就算过"；
 #   · 正断言 + 反断言成对：既要求该在的在，也要求不该在的不在
 #     （例如上游 wan1/lan1/lan2 命名必须已被替换、ttyFIQ0 getty 不得被启用）；
 #   · 任何一条不过 → 非零退出，CI 直接判失败，绝不静默放过。
+#
+# ★ 分区布局自适应（2026-10-16 事故修正，必须保留）：
+#   iNextOS 镜像有两种官方布局，取决于板级 csc 是否声明 BOOTFS_TYPE：
+#     单分区（本板 nanopi-r5s 上游路径，同官方 H88K 镜像）：
+#        16MiB 前导 + p1 = rootfs(ext4)，引导文件在 rootfs 的 /boot 里
+#     双分区（官方 easepi-r1.csc 声明 BOOTFS_TYPE="fat"，同官方 R1 镜像）：
+#        p1 = bootfs(vfat) + p2 = rootfs(ext4)
+#   旧版本把 p1/p2 写死，遇到本板的单分区布局 → p1(其实是 rootfs) 被当 bootfs、
+#   p2 不存在导致 rootfs 挂载点为空 → 全部断言误报失败，白跑一整轮构建。
+#   因此这里【按分区名/文件系统类型探测】，并在探测结果不合理时立即响亮失败。
 # ══════════════════════════════════════════════════════════════════════════
 set -u
 
-IMG="${1:?用法: verify-image.sh <img> [adapted|official]}"
-PROFILE="${2:-adapted}"
+PROBE=0
+if [ "${1:-}" = "--probe" ]; then
+	PROBE=1
+	IMG="${2:?用法: verify-image.sh --probe <img>}"
+	PROFILE="probe"
+else
+	IMG="${1:?用法: verify-image.sh <img> [adapted|official]}"
+	PROFILE="${2:-adapted}"
+fi
 FAIL=0
 
 ok()   { echo "  OK   $*"; }
@@ -26,33 +44,116 @@ info() { echo "       $*"; }
 echo "=== 镜像: $IMG (profile=$PROFILE)"
 ls -l "$IMG" || exit 1
 echo "--- sha256:"; sha256sum "$IMG" || true
+if [ -f "${IMG}.sha" ]; then
+	EXP=$(awk '{print $1}' "${IMG}.sha" 2>/dev/null | head -c 64)
+	ACT=$(sha256sum "$IMG" | awk '{print $1}')
+	[ -n "$EXP" ] && { [ "$EXP" = "$ACT" ] && ok "构建产物 .sha 与实算 sha256 一致（$ACT）" \
+		|| bad "构建产物 .sha 与实算 sha256 不一致（.sha=$EXP 实算=$ACT）"; }
+fi
 
 if ! command -v dtc >/dev/null 2>&1; then
 	sudo apt-get update -qq >/dev/null 2>&1 || true
 	sudo apt-get install -y -qq device-tree-compiler >/dev/null 2>&1 || true
 fi
 
+# ───────────────────────── 分区探测（布局自适应）─────────────────────────
 LOOP=$(sudo losetup --show -f -P "$IMG") || { echo "losetup 失败"; exit 1; }
 echo "--- loop: $LOOP"
+sudo partprobe "$LOOP" >/dev/null 2>&1 || true
+sleep 1
+echo "--- 分区表:"
+sudo parted -s "$LOOP" unit MiB print 2>&1 | sed 's/^/       /' || true
+
 sudo mkdir -p /mnt/ib /mnt/ir
-sudo mount "${LOOP}p1" /mnt/ib || { echo "挂载 p1 失败"; sudo losetup -d "$LOOP"; exit 1; }
-sudo mount "${LOOP}p2" /mnt/ir || { echo "挂载 p2 失败（rootfs 不在 p2？）"; }
-echo "--- p1:"; ls /mnt/ib | head -20
-echo "--- p2:"; ls /mnt/ir | head -12
+ROOTDEV=""
+BOOTDEV=""
+for p in ${LOOP}p*; do
+	[ -b "$p" ] || continue
+	ptype=$(sudo blkid -s TYPE -o value "$p" 2>/dev/null || true)
+	plabel=$(sudo blkid -s PARTLABEL -o value "$p" 2>/dev/null || true)
+	echo "       $(basename "$p")  type=${ptype:-?}  partlabel=${plabel:-?}"
+	case " $plabel $ptype " in
+		*' bootfs '*|*' vfat '*|*' msdos '*) [ -n "$BOOTDEV" ] || BOOTDEV="$p" ;;
+	esac
+	case " $plabel $ptype " in
+		*' rootfs '*|*' ext4 '*|*' ext3 '*|*' btrfs '*|*' xfs '*) [ -n "$ROOTDEV" ] || ROOTDEV="$p" ;;
+	esac
+done
+
+if [ -z "$ROOTDEV" ]; then
+	echo "!! 探测不到 rootfs 分区（见上面的分区表）—— 中止，不做后续断言"
+	sudo losetup -d "$LOOP" 2>/dev/null || true
+	exit 1
+fi
+sudo mount "$ROOTDEV" /mnt/ir || { echo "!! 挂载 rootfs（$(basename "$ROOTDEV")）失败"; sudo losetup -d "$LOOP"; exit 1; }
+
+# rootfs 合理性：探测错了就立刻响亮失败，别让它变成一屏假断言（2026-10-16 事故教训）
+if [ ! -d /mnt/ir/etc ] || [ ! -d /mnt/ir/usr ]; then
+	if [ "$PROBE" = "1" ]; then
+		echo "       (probe: $(basename "$ROOTDEV") 里没有 /etc /usr —— mock 镜像属正常)"
+	else
+		echo "!! 探测到的 rootfs（$(basename "$ROOTDEV")）里没有 /etc /usr —— 分区判定失效，"
+		echo "!! 先修自证脚本的分区探测，不要解读后面的断言（历史事故：分区假设错 → 全屏误报）"
+		sudo umount /mnt/ir 2>/dev/null || true
+		sudo losetup -d "$LOOP" 2>/dev/null || true
+		exit 1
+	fi
+fi
+
+# bootdir：独立 bootfs 分区优先（双分区布局），否则用 rootfs 里的 /boot（单分区布局）
+BOOTDIR=/mnt/ir/boot
+[ -f /mnt/ir/boot/firmware/armbianEnv.txt ] && BOOTDIR=/mnt/ir/boot/firmware
+if [ -n "$BOOTDEV" ]; then
+	if sudo mount "$BOOTDEV" /mnt/ib; then
+		if [ -f /mnt/ib/armbianEnv.txt ]; then
+			BOOTDIR=/mnt/ib
+		else
+			echo "       (bootfs $(basename "$BOOTDEV") 里没有 armbianEnv.txt，bootdir 仍用 rootfs 的 /boot)"
+		fi
+	else
+		echo "       (bootfs $(basename "$BOOTDEV") 挂载失败，bootdir 回落到 rootfs 的 /boot)"
+	fi
+fi
+echo "--- layout: rootfs=$(basename "$ROOTDEV")${BOOTDEV:+  bootfs=$(basename "$BOOTDEV")}  bootdir=$BOOTDIR"
+echo "LAYOUT rootfs=${ROOTDEV:-none} bootfs=${BOOTDEV:-none} bootdir=$BOOTDIR"
+
+if [ "$PROBE" = "1" ]; then
+	mountpoint -q /mnt/ib && sudo umount /mnt/ib 2>/dev/null || true
+	mountpoint -q /mnt/ir && sudo umount /mnt/ir 2>/dev/null || true
+	sudo losetup -d "$LOOP" 2>/dev/null || true
+	exit 0
+fi
+
+echo "--- bootdir 内容:"; ls "$BOOTDIR" 2>/dev/null | head -25 | sed 's/^/       /'
 
 # ───────────────────────── 底座判据（两档都跑）─────────────────────────
 echo
-echo "=== [底座] bootfs 引导链"
-if [ -f /mnt/ib/armbianEnv.txt ]; then
-	cat /mnt/ib/armbianEnv.txt | sed 's/^/       /'
-	grep -q 'rk3568-nanopi-r5s.dtb' /mnt/ib/armbianEnv.txt \
+echo "=== [底座] boot 引导链"
+if [ -f "$BOOTDIR/armbianEnv.txt" ]; then
+	cat "$BOOTDIR/armbianEnv.txt" | sed 's/^/       /'
+	grep -q 'rk3568-nanopi-r5s.dtb' "$BOOTDIR/armbianEnv.txt" \
 		&& ok "armbianEnv.txt 指向 rk3568-nanopi-r5s.dtb" \
 		|| bad "armbianEnv.txt 未指向 rk3568-nanopi-r5s.dtb（会引导到别的板子的 DTB）"
 else
-	bad "bootfs 缺 armbianEnv.txt"
+	bad "boot 目录（$BOOTDIR）缺 armbianEnv.txt（u-boot 读不到根分区参数）"
 fi
+# 引导链完整性：脚本 + 内核/initrd 必须都在 boot 目录（否则镜像根本起不来）
+BOOTSCR=""
+for f in "$BOOTDIR/boot.scr" "$BOOTDIR/boot.cmd" "$BOOTDIR/extlinux/extlinux.conf"; do
+	[ -e "$f" ] && BOOTSCR="$f" && break
+done
+[ -n "$BOOTSCR" ] && ok "引导脚本在位: $BOOTSCR" \
+	|| bad "boot 目录缺引导脚本（boot.scr / boot.cmd / extlinux.conf 都没有 → u-boot 无脚本可执行）"
+KERNF=""
+for f in "$BOOTDIR"/Image "$BOOTDIR"/vmlinuz-* "$BOOTDIR"/uInitrd "$BOOTDIR"/uInitrd-*; do
+	[ -e "$f" ] && KERNF="$f" && break
+done
+[ -n "$KERNF" ] && ok "内核/initrd 在位: $(basename "$KERNF")（$(stat -c%s "$KERNF") B）" \
+	|| bad "boot 目录缺内核镜像（Image / vmlinuz-* / uInitrd* 都没有）"
 DTB=""
-for c in /mnt/ib/dtb/rockchip/rk3568-nanopi-r5s.dtb /mnt/ir/boot/dtb/rockchip/rk3568-nanopi-r5s.dtb; do
+for c in "$BOOTDIR/dtb/rockchip/rk3568-nanopi-r5s.dtb" \
+	/mnt/ir/boot/dtb/rockchip/rk3568-nanopi-r5s.dtb \
+	/mnt/ir/boot/firmware/dtb/rockchip/rk3568-nanopi-r5s.dtb; do
 	[ -f "$c" ] && DTB="$c" && break
 done
 if [ -n "$DTB" ]; then
@@ -101,12 +202,12 @@ if [ -n "$DTB" ]; then
 	done
 	grep -q 'gpio-leds' /tmp/r5s.dts && ok "DTB 有 gpio-leds（板上四个 LED）" || bad "DTB 缺 gpio-leds"
 else
-	bad "镜像里找不到 rk3568-nanopi-r5s.dtb"
+	bad "镜像里找不到 rk3568-nanopi-r5s.dtb（搜索：$BOOTDIR/dtb 与 /rootfs/boot/dtb）"
 fi
 
 echo
 echo "=== [底座] 内核配置（三口 + NVMe 的命门）"
-CFG=$(ls /mnt/ib/config-* /mnt/ir/boot/config-* 2>/dev/null | head -1 || true)
+CFG=$(ls "$BOOTDIR"/config-* /mnt/ir/boot/config-* /mnt/ir/boot/firmware/config-* 2>/dev/null | head -1 || true)
 if [ -n "$CFG" ]; then
 	info "config: $CFG"
 	for sym in STMMAC_ETH R8169; do
@@ -121,7 +222,7 @@ if [ -n "$CFG" ]; then
 		|| bad "CONFIG_PCI_MSI 未启用"
 	grep -E '^CONFIG_(STMMAC_ETH|R8169|REALTEK_PHY|ROCKCHIP_PHY|BLK_DEV_NVME)=' "$CFG" | sed 's/^/       /'
 else
-	bad "镜像里找不到内核 config 文件"
+	bad "镜像里找不到内核 config 文件（搜过 $BOOTDIR/config-* 与 /rootfs/boot/config-*）"
 fi
 
 echo
@@ -254,8 +355,8 @@ fi
 
 echo
 echo "=== 收尾"
-sudo umount /mnt/ib 2>/dev/null || true
-sudo umount /mnt/ir 2>/dev/null || true
+mountpoint -q /mnt/ib && sudo umount /mnt/ib 2>/dev/null || true
+mountpoint -q /mnt/ir && sudo umount /mnt/ir 2>/dev/null || true
 sudo losetup -d "$LOOP" 2>/dev/null || true
 
 if [ "$FAIL" = "0" ]; then
