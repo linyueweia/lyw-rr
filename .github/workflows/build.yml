@@ -191,6 +191,11 @@ jobs:
           echo
           bash "$GITHUB_WORKSPACE/rr/tools/tests/verify-helpers-test.sh"
 
+          # EEE 扩展自测：enable 链接必须建在 rootfs 阶段（final-pass 里改 ${SDCARD} 进不了镜像）
+          echo
+          bash "$GITHUB_WORKSPACE/rr/tools/tests/eee-extension-test.sh" \
+            "$GITHUB_WORKSPACE/rr/extensions/lyw-rr-net-eee.sh"
+
       - name: Build iNextOS image
         run: |
           cd build
