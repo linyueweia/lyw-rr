@@ -45,6 +45,12 @@ if ! ( cd "$TMP" && touch .probe && ln -s .probe .probelink ) >/dev/null 2>&1; t
 	fi
 	echo "SKIP  两条正例（本机无建链权限，$(uname -s)）—— 正例由 Linux CI 的前置自测负责"
 fi
+# 本机调试用：EEE_TEST_FORCE_SYMLINK_OK=1 可强行让正例跑一遍（预期会失败），
+# 用来暴露"只在 Linux 才走到的代码路径"里的语法/变量问题（set -u 下最爱炸）。
+if [[ "${EEE_TEST_FORCE_SYMLINK_OK:-0}" == "1" ]]; then
+	echo "NOTE  已强制正例路径（仅本机调试；预期正例会 FAIL）"
+	SYMLINK_OK=1
+fi
 
 # 静态反回归 ①：final-pass 里不得出现 ${SDCARD}
 awk '/^function pre_umount_final_image__lyw_rr_net_eee\(\)/,0' "$EXT" > "$TMP/finalpass.txt"
@@ -103,7 +109,7 @@ run_body() {
 		| grep -q '^/etc/systemd/system/lyw-rr-eee-off-watch.timer$' || return 95
 }
 if [[ "$SYMLINK_OK" == 1 ]]; then
-	run_case "final-pass：镜像根=${MOUNT}，补建缺失链接并以 -L 断真身" 0
+	run_case "final-pass：以镜像根为准，补建缺失链接并以 -L 断真身" 0
 fi
 
 # 用例 3（负例）：${MOUNT} 不是镜像 → 必须响亮失败（不许输出一屏假断言）
