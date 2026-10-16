@@ -187,6 +187,10 @@ jobs:
           echo "布局探测自测通过（单分区 / 双分区两种官方布局都认得）"
           rm -f one.img two.img
 
+          # 辅助函数自测（node_status / DTS 文本解析）—— 同样必须在 Build 之前过
+          echo
+          bash "$GITHUB_WORKSPACE/rr/tools/tests/verify-helpers-test.sh"
+
       - name: Build iNextOS image
         run: |
           cd build

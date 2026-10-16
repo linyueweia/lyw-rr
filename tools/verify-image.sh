@@ -41,6 +41,14 @@ ok()   { echo "  OK   $*"; }
 bad()  { echo "  !!   $*"; FAIL=1; }
 info() { echo "       $*"; }
 
+# 在目标 rootfs 里找某 unit 的 enable 链接（任意 *.wants/）：
+#   WantedBy 由 unit 自己决定 —— fix-ifaces-name → sysinit.target、
+#   istorenext-init-network → networking.service、本仓自制服务 → multi-user/timers.target
+#   写死某个目录会在上游改 [Install] 时变成误报，所以只断言"确实被 enable"并打印实际路径。
+wants_link() {  # $1 = unit 名；找到则输出链接路径
+	find /mnt/ir/etc/systemd/system -maxdepth 2 -name "$1" -path '*.wants/*' 2>/dev/null | head -1
+}
+
 echo "=== 镜像: $IMG (profile=$PROFILE)"
 ls -l "$IMG" || exit 1
 echo "--- sha256:"; sha256sum "$IMG" || true
@@ -227,7 +235,9 @@ fi
 
 echo
 echo "=== [底座] 驱动本体是否真的落进 rootfs"
-for m in r8169  dwmac-rockchip stmmac; do
+# 模块名以源码文件名为准：drivers/net/ethernet/stmicro/stmmac/dwmac-rk.c → dwmac-rk.ko
+# （不要写成 "dwmac-rockchip.ko"；依据 = 本板真实构建日志 LD [M] .../dwmac-rk.o）
+for m in r8169  dwmac-rk stmmac; do
 	KO=$(find /mnt/ir/lib/modules -name "${m}.ko*" 2>/dev/null | head -1)
 	[ -n "$KO" ] && ok "${m}.ko -> ${KO#/mnt/ir}" || bad "rootfs 缺 ${m}.ko（对应的网口不会起来）"
 done
@@ -240,12 +250,12 @@ echo "=== [底座] iNextOS 首启网络链（上游 istorenext 扩展装的两�
 for f in usr/lib/istorenext/fix-ifaces-name usr/lib/istorenext/istorenext-init-network; do
 	[ -e "/mnt/ir/$f" ] && ok "在: $f" || bad "缺: $f（iNextOS 首启网络链不完整）"
 done
-{ [ -L /mnt/ir/etc/systemd/system/sysinit.target.wants/fix-ifaces-name.service ] \
-	|| [ -e /mnt/ir/etc/systemd/system/sysinit.target.wants/fix-ifaces-name.service ]; } \
-	&& ok "fix-ifaces-name.service 已 enable" || bad "fix-ifaces-name.service 未 enable"
-{ [ -L /mnt/ir/etc/systemd/system/multi-user.target.wants/istorenext-init-network.service ] \
-	|| [ -e /mnt/ir/etc/systemd/system/multi-user.target.wants/istorenext-init-network.service ]; } \
-	&& ok "istorenext-init-network.service 已 enable" || bad "istorenext-init-network.service 未 enable"
+L=$(wants_link fix-ifaces-name.service); [ -n "$L" ] \
+	&& ok "fix-ifaces-name.service 已 enable（${L#/mnt/ir}）" \
+	|| bad "fix-ifaces-name.service 未 enable（口名不会按 eth_order 重排）"
+L=$(wants_link istorenext-init-network.service); [ -n "$L" ] \
+	&& ok "istorenext-init-network.service 已 enable（${L#/mnt/ir}）" \
+	|| bad "istorenext-init-network.service 未 enable（首启 192.168.100.1 不会生成）"
 grep -q 'iNextOS' /mnt/ir/etc/hostname 2>/dev/null || info "/etc/hostname: $(cat /mnt/ir/etc/hostname 2>/dev/null)"
 
 # ───────────────────────── 适配层判据（仅 adapted）─────────────────────────
@@ -280,7 +290,7 @@ if [ "$PROFILE" = "adapted" ]; then
 	fi
 	NM=/mnt/ir/etc/systemd/system/NetworkManager.service.d/10-r5s-lan-order.conf
 	if [ -f "$NM" ]; then
-		grep -q '^After=istorenext-init-network.service networking.service$' "$NM" \
+		grep -q 'After=istorenext-init-network.service networking.service' "$NM" \
 			&& ok "NM 排序 drop-in 在位（避免首启与 ifupdown 抢口）" \
 			|| bad "NM 排序 drop-in 内容不对"
 	else
@@ -294,9 +304,8 @@ if [ "$PROFILE" = "adapted" ]; then
 		[ -e "/mnt/ir/$f" ] && ok "在: $f" || bad "缺: $f（网页后台不完整）"
 	done
 	for s in roceos.service roceos-ai.service roceos-vision.service; do
-		{ [ -L "/mnt/ir/etc/systemd/system/multi-user.target.wants/$s" ] \
-			|| [ -e "/mnt/ir/etc/systemd/system/multi-user.target.wants/$s" ]; } \
-			&& ok "已 enable: $s" || bad "未 enable: $s"
+		SL=$(wants_link "$s"); [ -n "$SL" ] \
+			&& ok "已 enable: $s（${SL#/mnt/ir}）" || bad "未 enable: $s（后台不会自启）"
 	done
 	{ [ -L /mnt/ir/etc/nginx/sites-enabled/roceos.conf ] \
 		|| [ -e /mnt/ir/etc/nginx/sites-enabled/roceos.conf ]; } \
@@ -319,12 +328,10 @@ if [ "$PROFILE" = "adapted" ]; then
 		etc/systemd/system/lyw-rr-eee-off-watch.timer; do
 		[ -e "/mnt/ir/$f" ] && ok "在: $f" || bad "缺: $f"
 	done
-	{ [ -L /mnt/ir/etc/systemd/system/multi-user.target.wants/lyw-rr-eee-off.service ] \
-		|| [ -e /mnt/ir/etc/systemd/system/multi-user.target.wants/lyw-rr-eee-off.service ]; } \
-		&& ok "EEE 服务已 enable" || bad "EEE 服务未 enable"
-	{ [ -L /mnt/ir/etc/systemd/system/timers.target.wants/lyw-rr-eee-off-watch.timer ] \
-		|| [ -e /mnt/ir/etc/systemd/system/timers.target.wants/lyw-rr-eee-off-watch.timer ]; } \
-		&& ok "EEE 兜底 timer 已 enable" || bad "EEE 兜底 timer 未 enable"
+	SL=$(wants_link lyw-rr-eee-off.service); [ -n "$SL" ] \
+		&& ok "EEE 服务已 enable（${SL#/mnt/ir}）" || bad "EEE 服务未 enable"
+	SL=$(wants_link lyw-rr-eee-off-watch.timer); [ -n "$SL" ] \
+		&& ok "EEE 兜底 timer 已 enable（${SL#/mnt/ir}）" || bad "EEE 兜底 timer 未 enable"
 	[ -x /mnt/ir/usr/sbin/ethtool ] || [ -x /mnt/ir/usr/bin/ethtool ] \
 		&& ok "ethtool 在镜像里" || bad "镜像缺 ethtool（整套 EEE 修复形同不存在）"
 
@@ -335,21 +342,18 @@ if [ "$PROFILE" = "adapted" ]; then
 		/mnt/ir/usr/local/sbin/lyw-rr-net-roles.py 2>/dev/null && ok "角色脚本语法通过" || bad "角色脚本语法错误"
 	grep -q 'ROLE_MAP' /mnt/ir/etc/lyw-rr-net-roles.conf 2>/dev/null && ok "角色映射文件在位" || bad "缺角色映射文件"
 	grep -q 'lan2=eth2' /mnt/ir/etc/lyw-rr-net-roles.conf 2>/dev/null && ok "映射含三口（lan2=eth2）" || bad "角色映射不全"
-	{ [ -L /mnt/ir/etc/systemd/system/multi-user.target.wants/lyw-rr-net-roles.service ] \
-		|| [ -e /mnt/ir/etc/systemd/system/multi-user.target.wants/lyw-rr-net-roles.service ]; } \
-		&& ok "角色服务已 enable" || bad "角色服务未 enable"
+	SL=$(wants_link lyw-rr-net-roles.service); [ -n "$SL" ] \
+		&& ok "角色服务已 enable（${SL#/mnt/ir}）" || bad "角色服务未 enable"
 	grep -q '^Before=roceos.service' /mnt/ir/etc/systemd/system/lyw-rr-net-roles.service 2>/dev/null \
 		&& ok "角色服务排在 roceos 之前" || bad "角色服务排序不对（改了库也要重启才生效）"
 
 	echo
 	echo "=== [适配层] 反断言：不该有的东西"
-	{ [ -L /mnt/ir/etc/systemd/system/getty.target.wants/serial-getty@ttyFIQ0.service ] \
-		|| [ -L /mnt/ir/etc/systemd/system/multi-user.target.wants/serial-getty@ttyFIQ0.service ]; } \
-		&& bad "启用了 serial-getty@ttyFIQ0（本板 current 分支用 ttyS2，会拖慢启动）" \
-		|| ok "反断言：未启用 ttyFIQ0 getty"
-	{ [ -L /mnt/ir/etc/systemd/system/getty.target.wants/serial-getty@ttyS2.service ] \
-		|| [ -L /mnt/ir/etc/systemd/system/multi-user.target.wants/serial-getty@ttyS2.service ]; } \
-		&& ok "serial-getty@ttyS2 已启用（串口控制台可用）" \
+	FIQ=$(wants_link serial-getty@ttyFIQ0.service); [ -z "$FIQ" ] \
+		&& ok "反断言：未启用 ttyFIQ0 getty" \
+		|| bad "启用了 serial-getty@ttyFIQ0（${FIQ#/mnt/ir}）—— 本板 current 分支用 ttyS2，会拖慢启动"
+	SG=$(wants_link serial-getty@ttyS2.service); [ -n "$SG" ] \
+		&& ok "serial-getty@ttyS2 已启用（${SG#/mnt/ir}，串口控制台可用）" \
 		|| bad "serial-getty@ttyS2 未启用（串口登录可能没有）"
 fi
 
