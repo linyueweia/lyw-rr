@@ -1,0 +1,194 @@
+name: Build iNextOS for NanoPi R5S
+
+# 两档 profile（手动触发时选择）：
+#   adapted  —— 本仓适配层：上游框架 + 覆盖板级 csc（iNextOS 口名/角色）+ roceos 后台
+#               + EEE 关闭 + 角色归一。默认档。
+#   official —— 纯官方基线：上游 armbian-easepi 自带的 nanopi-r5s.csc + istorenext
+#               扩展，一行都不改。用途＝权威对照物（也是本仓丢了的那份参照镜像是谁）。
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: '构建档位'
+        required: true
+        default: adapted
+        type: choice
+        options:
+          - adapted
+          - official
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'last-upstream-sha'
+  schedule:
+    - cron: '0 19 * * *'   # 每日 03:00 CST 检查上游更新（仅当上游变更时才构建）
+
+jobs:
+  upstream:
+    name: Check upstream framework (armbian-easepi)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.cmp.outputs.changed }}
+      sha: ${{ steps.cmp.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare upstream HEAD with recorded sha
+        id: cmp
+        run: |
+          set -eu
+          UP=$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/jjm2473/armbian-easepi/branches/easepi-v26.02" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')
+          OLD=$(cat last-upstream-sha 2>/dev/null | tr -d '\n' || echo none)
+          echo "上游 easepi-v26.02 HEAD : $UP"
+          echo "本仓库记录的指纹       : $OLD"
+          if [ "$UP" = "$OLD" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "sha=$UP"       >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record new upstream sha
+        if: steps.cmp.outputs.changed == 'true'
+        run: |
+          set -eu
+          echo "${{ steps.cmp.outputs.sha }}" > last-upstream-sha
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add last-upstream-sha
+          git commit -m "chore: 记录上游框架指纹 ${{ steps.cmp.outputs.sha }} [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
+
+  build:
+    name: Build iNextOS image (NanoPi R5S / RK3568)
+    needs: upstream
+    if: github.event_name != 'schedule' || needs.upstream.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      PROFILE: ${{ github.event.inputs.profile || 'adapted' }}
+    steps:
+      - name: Checkout board adaptation
+        uses: actions/checkout@v4
+        with:
+          path: rr
+
+      - name: Checkout iNextOS build framework (armbian-easepi)
+        uses: actions/checkout@v4
+        with:
+          repository: jjm2473/armbian-easepi
+          ref: easepi-v26.02
+          path: build
+
+      - name: Show profile
+        run: echo "PROFILE=$PROFILE"
+
+      # ── 适配层注入（仅 adapted）────────────────────────────────────────────
+      - name: Inject NanoPi R5S board config (adapted)
+        if: github.event.inputs.profile != 'official'
+        run: |
+          set -e
+          echo "--- 上游原文件（留档，便于 diff）:"
+          head -20 build/config/boards/nanopi-r5s.csc
+          cp -v rr/config/boards/nanopi-r5s.csc build/config/boards/
+          echo "--- 注入后关键标记:"
+          grep -nE 'NAME:="eth[0-9]"|DEFAULT_INTERFACE|^fe2a0000|ethernet0 = |BOOT_FDT_FILE' build/config/boards/nanopi-r5s.csc || true
+          # 硬自检：iNextOS 口名钉定的三条规则必须在
+          for l in 'KERNELS=="fe2a0000.ethernet", NAME:="eth0"' \
+                   'KERNELS=="0000:01:00.0", NAME:="eth1"' \
+                   'KERNELS=="0001:11:00.0", NAME:="eth2"'; do
+            grep -q "$l" build/config/boards/nanopi-r5s.csc \
+              || { echo "!! csc 缺 udev 规则: $l"; exit 1; }
+          done
+          grep -q '^DEFAULT_INTERFACE=eth2$' build/config/boards/nanopi-r5s.csc \
+            || { echo "!! csc 的默认口不是 eth2"; exit 1; }
+          grep -qE 'NAME:="(wan1|lan1|lan2)"' build/config/boards/nanopi-r5s.csc \
+            && { echo "!! csc 里仍残留上游 wan1/lan1/lan2 命名"; exit 1; } || true
+          grep -q 'ethernet0 = &gmac0' build/config/boards/nanopi-r5s.csc || true
+
+      - name: Install NanoPi R5S extensions (adapted)
+        if: github.event.inputs.profile != 'official'
+        run: |
+          set -e
+          mkdir -p build/userpatches/extensions
+          cp -v rr/extensions/*.sh build/userpatches/extensions/
+          chmod +x build/userpatches/extensions/*.sh
+          ls -l build/userpatches/extensions/
+          # 框架只加载【可执行】的扩展；权限不对会被静默跳过（"Found 0 extensions"）
+          for fn in lyw_rr_roceos lyw_rr_net_eee lyw_rr_net_roles; do
+            grep -rq "$fn" build/userpatches/extensions/ || { echo "!! 扩展函数缺失: $fn"; exit 1; }
+          done
+          grep -q 'custom_kernel_config__lyw_rr_board_symbols' \
+            build/userpatches/extensions/lyw-rr-kernel-config.sh \
+            || { echo "!! kernel-config 扩展缺钩子"; exit 1; }
+          grep -q 'ROCEOS_PAYLOAD_SHA256' build/userpatches/extensions/lyw-rr-roceos.sh \
+            || { echo "!! roceos 扩展缺载荷指纹"; exit 1; }
+
+      - name: Fetch roceos web-UI payload into userpatches/overlay (adapted)
+        if: github.event.inputs.profile != 'official'
+        run: |
+          set -e
+          mkdir -p build/userpatches/overlay
+          URL="https://github.com/linyueweia/lyw-OS/releases/download/roceos-payload-v1/roceos-payload.tar.gz"
+          curl -fsSL -o build/userpatches/overlay/roceos-payload.tar.gz "$URL"
+          echo "6b819584a1b1701163f8983bd59a31821643f64dd65c76ba8f500ef54c5e8bb5  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
+          ls -l build/userpatches/overlay/
+
+      - name: Set up QEMU (binfmt_misc for arm64 cross-build)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,arm
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Build iNextOS image
+        run: |
+          cd build
+          # 注释必须放在整条命令【之前】：放进 "\" 续行之间会把后续参数整段注释掉
+          if [ "$PROFILE" = "adapted" ]; then
+            EXTS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-eee,lyw-rr-net-roles"
+          else
+            EXTS="istorenext"
+          fi
+          echo "ENABLE_EXTENSIONS=$EXTS"
+          ./compile.sh build \
+            BOARD=nanopi-r5s \
+            BRANCH=current \
+            RELEASE=trixie \
+            ENABLE_EXTENSIONS="$EXTS" \
+            BUILD_MINIMAL=no \
+            BUILD_DESKTOP=no \
+            KERNEL_CONFIGURE=no \
+            COMPRESS_OUTPUTIMAGE="sha,img,xz" \
+            SHARE_LOG=yes \
+            EXPERT=yes
+
+      - name: Post-process verification (image self-check)
+        run: |
+          set -e
+          IMG=$(ls build/output/images/*.img | head -n1)
+          echo "IMG=$IMG"
+          chmod +x rr/tools/verify-image.sh
+          sudo -E bash rr/tools/verify-image.sh "$IMG" "$PROFILE"
+
+      - name: Show outputs
+        run: |
+          ls -lh build/output/images/ || true
+          cat build/output/images/*.sha 2>/dev/null || true
+
+      - name: Upload iNextOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: inextos-nanopi-r5s-${{ env.PROFILE }}
+          path: |
+            build/output/images/*.img.xz
+            build/output/images/*.sha
+          retention-days: 14
+          if-no-files-found: error
