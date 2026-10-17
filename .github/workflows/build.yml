@@ -115,6 +115,24 @@ jobs:
           fi
           echo "csc 注入自检全部通过"
 
+          # ── LED 触发器修正（2026-10-17 实机定案）─────────────────────────
+          # 上游 overlay 把第二块 RTL8125 写成 r8169-1-100:00:link，但它在 PCI domain 0001
+          # （0001:11:00.0），内核实际名字是 r8169-1-1100:00 → 触发器永不绑定 → LAN-2 灯一直灭。
+          # 用本仓的修正版覆盖框架里所有内核分支的同名 overlay。
+          n=0
+          for f in build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-leds.dtso; do
+            [ -f "$f" ] || continue
+            cp -v rr/config/overlays/rockchip-rk3568-nanopi-r5s-leds.dtso "$f"
+            n=$((n+1))
+          done
+          [ "$n" -ge 1 ] || { echo "!! 框架里没找到 r5s leds overlay（n=$n）"; exit 1; }
+          grep -qh 'r8169-1-1100:00:link' build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-leds.dtso \
+            || { echo "!! overlay 未被修正（仍缺 r8169-1-1100:00）"; exit 1; }
+          if grep -qhF '"r8169-1-100:00:link"' build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-leds.dtso; then
+            echo "!! overlay 里仍有错误的 r8169-1-100:00:link"; exit 1
+          fi
+          echo "LED overlay 修正完成（$n 个内核分支）"
+
       - name: Install NanoPi R5S extensions (adapted)
         if: github.event.inputs.profile != 'official'
         run: |

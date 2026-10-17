@@ -36,17 +36,31 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 
 	cat <<- 'EOF' > "${SDCARD}/usr/local/sbin/lyw-rr-net-roles.py"
 		#!/usr/bin/env python3
-		# NanoPi R5S：把 roceos 的角色表纠正为 /etc/lyw-rr-net-roles.conf 里的映射（幂等）。
-		# 依据：三线实机定案 —— 角色真源是 roceos.db 三张表，不是 factory-env.json。
+		# NanoPi R5S：roceos 网口角色/身份归一（幂等，2026-10-17 重写）
+		#
+		# 两个阶段，避免"每次开机都把用户在网页后台改的角色改回去"：
+		#   ① 首启（/var/lib/lyw-rr-net-roles.done 不存在）：按 /etc/lyw-rr-net-roles.conf 的
+		#      ROLE_MAP 把 roceos 自动分配的 wan/lan 纠正成本板口径，并把所有 lan 口塞进同一个桥。
+		#   ② 之后每次开机：只做两件事 ——
+		#        a) 按 MAC 修"名字漂移"（udev 改名后 device/physical_nics 与实机对不上），
+		#           角色指向别的物理口（用户改过）就跳过，绝不覆盖；
+		#        b) 把没有被 roceos 接管的网口（首启时 PCIe 第二 domain 还没枚举出来的那个）
+		#           并入 LAN 桥，避免"插了线却什么都不是"。
 		import json, os, sqlite3, sys, time
 
 		DB = "/opt/roceos/data/roceos.db"
 		CONF = "/etc/lyw-rr-net-roles.conf"
 		LOG = "/var/log/lyw-rr-net-roles.log"
+		MARK = "/var/lib/lyw-rr-net-roles.done"
+
 
 		def log(msg):
-		    with open(LOG, "a") as f:
-		        f.write("[%s] %s\n" % (time.strftime("%F %T"), msg))
+		    try:
+		        with open(LOG, "a") as f:
+		            f.write("[%s] %s\n" % (time.strftime("%F %T"), msg))
+		    except OSError:
+		        pass
+
 
 		def want_map():
 		    raw = ""
@@ -66,71 +80,126 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 		            out[name.strip()] = dev.strip()
 		    return out
 
+
+		def ifaces():
+		    return sorted(n for n in os.listdir("/sys/class/net") if n.startswith("eth"))
+
+
+		def mac_of(dev):
+		    try:
+		        with open("/sys/class/net/%s/address" % dev) as f:
+		            return f.read().strip().lower()
+		    except OSError:
+		        return ""
+
+
 		WANT = want_map()
 		if not WANT:
 		    log("映射为空，跳过（检查 %s）" % CONF)
 		    sys.exit(0)
 
+		# 等所有网口出现：第二 PCIe domain 的 2.5G 可能比 roceos 建库晚很久才枚举出来，
+		# 首启时少一个口 → roceos 只按 2 个口建库 → 第三个口成孤儿。
+		deadline = time.time() + 90
+		expect = len(WANT)
+		while time.time() < deadline and len(ifaces()) < expect:
+		    time.sleep(3)
+
 		if not os.path.exists(DB):
 		    log("roceos.db 不存在，跳过（首次开机 roceos 尚未建库）")
 		    sys.exit(0)
 
-		def mac_of(dev):
-		    try:
-		        with open("/sys/class/net/%s/address" % dev) as f:
-		            return f.read().strip()
-		    except OSError:
-		        return ""
-
 		con = sqlite3.connect(DB)
 		cur = con.cursor()
 		fixed = []
+		first_boot = not os.path.exists(MARK)
 
-		# ① network_interfaces.device
-		for name, dev in WANT.items():
-		    if not os.path.exists("/sys/class/net/" + dev):
-		        log("跳过 %s→%s：接口 %s 不存在" % (name, dev, dev))
-		        continue
-		    for row in cur.execute("select device from network_interfaces where id=?", (name,)):
-		        if row[0] != dev:
-		            cur.execute("update network_interfaces set device=?, updated_at=? where id=?",
-		                        (dev, time.strftime("%Y-%m-%d %H:%M:%S"), name))
-		            fixed.append("network_interfaces.%s.device: %s→%s" % (name, row[0], dev))
 
-		# ② interface_bindings.physical_nics / physical_nic_macs（MAC 取实机现值，绝不写死）
+		def rows(sql, args=()):
+		    try:
+		        return list(cur.execute(sql, args))
+		    except sqlite3.Error as e:
+		        log("查询失败: %s" % e)
+		        return []
+
+
+		TS = time.strftime("%Y-%m-%d %H:%M:%S")
+
+		if first_boot:
+		    for name, dev in WANT.items():
+		        if not os.path.exists("/sys/class/net/" + dev):
+		            log("跳过 %s→%s：接口不存在" % (name, dev))
+		            continue
+		        for (old,) in rows("select device from network_interfaces where id=?", (name,)):
+		            if old != dev:
+		                cur.execute("update network_interfaces set device=?, updated_at=? where id=?",
+		                            (dev, TS, name))
+		                fixed.append("首启 %s: %s→%s" % (name, old, dev))
+		    lans = sorted(d for n, d in WANT.items() if n.startswith("lan") and os.path.exists("/sys/class/net/" + d))
+		    if lans:
+		        for bid, nics in rows("select b.id, l.nic_ids from interface_bindings b "
+		                              "join lan_configs l on l.binding_id=b.id "
+		                              "where b.binding_name like 'lan%' order by b.binding_name limit 1"):
+		            want = json.dumps(lans)
+		            if nics != want:
+		                cur.execute("update lan_configs set nic_ids=?, updated_at=? where binding_id=?",
+		                            (want, TS, bid))
+		                fixed.append("首启 lan.nic_ids: %s→%s" % (nics, want))
+		    try:
+		        open(MARK, "w").write(TS + "\n")
+		    except OSError as e:
+		        log("marker 写入失败: %s" % e)
+
 		for name, dev in WANT.items():
 		    if not os.path.exists("/sys/class/net/" + dev):
 		        continue
 		    mac = mac_of(dev)
-		    for row in cur.execute(
-		            "select physical_nics, physical_nic_macs from interface_bindings where binding_name=?",
-		            (name,)):
+		    for bid, nics, macs, dev_col in rows(
+		            "select b.id, b.physical_nics, b.physical_nic_macs, i.device "
+		            "from interface_bindings b left join network_interfaces i on i.id=b.binding_name "
+		            "where b.binding_name=?", (name,)):
+		        try:
+		            rec_macs = [m.lower() for m in json.loads(macs or "[]")]
+		        except ValueError:
+		            rec_macs = []
+		        if mac and rec_macs and mac not in rec_macs:
+		            continue
 		        want_nics = json.dumps([dev])
-		        want_macs = json.dumps([mac]) if mac else row[1]
-		        if row[0] != want_nics or (mac and row[1] != want_macs):
+		        want_macs = json.dumps([mac]) if mac else macs
+		        if nics != want_nics or (mac and macs != want_macs):
 		            cur.execute("update interface_bindings set physical_nics=?, physical_nic_macs=?, updated_at=? "
-		                        "where binding_name=?",
-		                        (want_nics, want_macs, time.strftime("%Y-%m-%d %H:%M:%S"), name))
-		            fixed.append("interface_bindings.%s: %s→%s" % (name, row[0], want_nics))
+		                        "where id=?", (want_nics, want_macs, TS, bid))
+		            fixed.append("修名 %s: %s→%s" % (name, nics, want_nics))
+		        if dev_col and dev_col != dev:
+		            cur.execute("update network_interfaces set device=?, updated_at=? where id=?", (dev, TS, name))
+		            fixed.append("修名 device %s: %s→%s" % (name, dev_col, dev))
 
-		# ③ lan_configs.nic_ids（经 binding_id 关联，仅同步网卡列表，不动 IP/掩码/DHCP）
-		for name, dev in WANT.items():
-		    if not name.startswith("lan") or not os.path.exists("/sys/class/net/" + dev):
-		        continue
-		    want = json.dumps([dev])
-		    for bid, nics in cur.execute(
-		            "select b.id, l.nic_ids from interface_bindings b join lan_configs l "
-		            "on l.binding_id = b.id where b.binding_name=?", (name,)):
-		        if nics != want:
-		            cur.execute("update lan_configs set nic_ids=?, updated_at=? where binding_id=?",
-		                        (want, time.strftime("%Y-%m-%d %H:%M:%S"), bid))
-		            fixed.append("lan_configs(%s).nic_ids: %s→%s" % (name, nics, want))
+		bridged = set()
+		for (nics,) in rows("select nic_ids from lan_configs"):
+		    try:
+		        bridged.update(json.loads(nics or "[]"))
+		    except ValueError:
+		        pass
+		wan_devs = set(d for (d,) in rows("select device from network_interfaces where type='wan'"))
+		orphans = [n for n in ifaces() if n not in bridged and n not in wan_devs]
+		if orphans:
+		    for bid, nics in rows("select b.id, l.nic_ids from interface_bindings b "
+		                          "join lan_configs l on l.binding_id=b.id "
+		                          "where b.binding_name like 'lan%' order by b.binding_name limit 1"):
+		        try:
+		            cur_list = json.loads(nics or "[]")
+		        except ValueError:
+		            cur_list = []
+		        new_list = sorted(set(cur_list) | set(orphans))
+		        cur.execute("update lan_configs set nic_ids=?, updated_at=? where binding_id=?",
+		                    (json.dumps(new_list), TS, bid))
+		        fixed.append("孤儿口入桥 %s→%s" % (cur_list, new_list))
 
 		if fixed:
 		    con.commit()
 		    log("已纠正 %d 项：%s" % (len(fixed), "; ".join(fixed)))
 		else:
-		    log("角色已正确，无需改动")
+		    log("角色/身份已正确，无需改动")
 		con.close()
 		sys.exit(0)
 	EOF

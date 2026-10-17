@@ -1,0 +1,33 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * NanoPi R5S 前面板三只 GPIO 灯的内核触发器绑定（本仓修正版）
+ *
+ * 上游（armbian rockchip64-* 的 rockchip-rk3568-nanopi-r5s-leds.dtso）把第二块
+ * RTL8125 的触发器写成 r8169-1-100:00:link，但该网卡在 PCI **domain 0001** 上
+ * （0001:11:00.0），内核实际注册的 mdio 总线名是 r8169-1-1100:00：
+ *
+ *   dmesg: Realtek Internal NBASE-T PHY r8169-1-1100:00: attached PHY driver ...
+ *
+ * 名字对不上 → 触发器永不绑定 → LAN-2 这盏灯永远是灭的（DT 里 default-state=off，
+ * 没有回退路径）。实机 2026-10-17 验证：把 /sys/class/leds/LAN-2/trigger 手工写成
+ * r8169-1-1100:00:link 后，插线的那个口立刻亮（brightness=1）。
+ *
+ * 三个口与丝印的对应（实机核对，从机器背面左→右）：
+ *   LAN2（2.5G）= 0001:11:00.0 = eth2
+ *   LAN1（2.5G）= 0000:01:00.0 = eth1
+ *   WAN （1G  ）= fe2a0000.ethernet = eth0（stmmac-0:01）
+ */
+
+&{/gpio-leds/led-wan} {
+	linux,default-trigger = "stmmac-0:01:link";
+};
+
+&{/gpio-leds/led-lan1} {
+	linux,default-trigger = "r8169-0-100:00:link";
+};
+
+&{/gpio-leds/led-lan2} {
+	linux,default-trigger = "r8169-1-1100:00:link";
+};
