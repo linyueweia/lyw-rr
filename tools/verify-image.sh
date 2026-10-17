@@ -318,25 +318,22 @@ if [ "$PROFILE" = "adapted" ]; then
 		|| bad "缺 apt pin 文件"
 
 	echo
-	echo "=== [适配层] EEE 关闭（五层持久化）"
-	[ -x /mnt/ir/usr/local/sbin/lyw-rr-eee-off.sh ] && ok "EEE 脚本在位且可执行" || bad "缺 lyw-rr-eee-off.sh"
-	sh -n /mnt/ir/usr/local/sbin/lyw-rr-eee-off.sh 2>/dev/null && ok "EEE 脚本语法通过" || bad "EEE 脚本语法错误"
-	grep -q -- '--set-eee' /mnt/ir/usr/local/sbin/lyw-rr-eee-off.sh 2>/dev/null \
-		&& ok "EEE 脚本含 --set-eee（真的在关 EEE）" || bad "EEE 脚本不含 --set-eee"
+	echo
+	echo "=== [适配层] EEE 保持官方默认（镜像里不得有 EEE 关闭件）"
 	for f in usr/local/sbin/lyw-rr-eee-off.sh etc/systemd/system/lyw-rr-eee-off.service \
 		etc/NetworkManager/dispatcher.d/90-lyw-rr-eee-off etc/network/if-up.d/zz-lyw-rr-eee-off \
 		etc/systemd/system/lyw-rr-eee-off-watch.timer; do
-		[ -e "/mnt/ir/$f" ] && ok "在: $f" || bad "缺: $f"
+		[ -e "/mnt/ir/$f" ] && bad "仍有 EEE 关闭件: $f（与官方默认不一致）" || ok "无 $f"
 	done
-	SL=$(wants_link lyw-rr-eee-off.service); [ -n "$SL" ] \
-		&& ok "EEE 服务已 enable（${SL#/mnt/ir}）" || bad "EEE 服务未 enable"
-	SL=$(wants_link lyw-rr-eee-off-watch.timer); [ -n "$SL" ] \
-		&& ok "EEE 兜底 timer 已 enable（${SL#/mnt/ir}）" || bad "EEE 兜底 timer 未 enable"
-	[ -x /mnt/ir/usr/sbin/ethtool ] || [ -x /mnt/ir/usr/bin/ethtool ] \
-		&& ok "ethtool 在镜像里" || bad "镜像缺 ethtool（整套 EEE 修复形同不存在）"
+	[ -n "$(wants_link lyw-rr-eee-off.service)" ] && bad "EEE 关闭服务仍被 enable" || ok "EEE 关闭服务未 enable"
+	[ -n "$(wants_link lyw-rr-eee-off-watch.timer)" ] && bad "EEE 兜底 timer 仍被 enable" || ok "EEE 兜底 timer 未 enable"
+	if [ -x /mnt/ir/usr/sbin/ethtool ] || [ -x /mnt/ir/usr/bin/ethtool ]; then
+		ok "ethtool 在镜像里（与官方基线一致，便于现场取证）"
+	else
+		warn "镜像无 ethtool（官方基线有；不影响功能，但现场取证不便）"
+	fi
 
-	echo
-	echo "=== [适配层] 网口角色归一"
+		echo "=== [适配层] 网口角色归一"
 	[ -x /mnt/ir/usr/local/sbin/lyw-rr-net-roles.py ] && ok "角色脚本在位" || bad "缺 lyw-rr-net-roles.py"
 	python3 -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" \
 		/mnt/ir/usr/local/sbin/lyw-rr-net-roles.py 2>/dev/null && ok "角色脚本语法通过" || bad "角色脚本语法错误"

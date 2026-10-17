@@ -44,7 +44,7 @@
 | 内核配置（`STMMAC_ETH=m`、`R8169=m`、`BLK_DEV_NVME=y`、`LEDS_GPIO=y`…）| **官方值**，本仓只断言 | `lyw-rr-kernel-config.sh` 不改值：上游一旦改掉这些，构建立刻失败而不是上板才发现 |
 | roceos 网页后台（`/opt/roceos` + 3 个服务 + nginx 站点/证书）| 官方镜像**有**、框架**没有** → 本仓注入 | `lyw-rr-roceos.sh`；载荷取自 lyw-OS release，sha256 钉死 |
 | 网口命名钉定（udev 三规则 + `/etc/eth_order` + `.default-network` + NM 排序 drop-in）| **本仓适配**（替换上游 wan1/lan1/lan2）| 上游命名与 iNextOS 的 `eth*` 网络链不兼容：口名/后台地址会随内核探测顺序漂移 |
-| EEE/LPI 关闭（五层持久化）| **本仓预防**（本板未实测）| 同族三线实机定案：EEE 开着 → 网口间歇整口掉线。RTL8125 是最常被报 EEE 抖动的一类 PHY |
+| EEE/LPI | **不关闭**（官方默认开启）| 2026-10-13 曾按"同族三线"判为 EEE 唤醒时序问题并做了五层关闭；2026-10-17 在 T68M 主路由按日志复核推翻（EEE 本是关闭态而掉线仍发生，141 次掉线均伴随对端重启）→ 本仓改为与官方一致：镜像里不得有 EEE 关闭件，CI 反向断言 |
 | roceos 角色归一（`roceos.db` 三张表）| **本仓适配** | 配置在 `/etc/lyw-rr-net-roles.conf`，想换角色只改这一个文件 |
 
 ## 两档构建 profile
@@ -70,7 +70,7 @@
   - rootfs 真有 `r8169.ko` / `dwmac-rockchip.ko` / `stmmac.ko`，且 `modules.dep` 收录 `r8169`（自动加载）；
   - iNextOS 两件套在、`fix-ifaces-name.service` / `istorenext-init-network.service` 已 enable；
   -（adapted）三条 udev 规则、`/etc/eth_order` 精确内容、`/root/.default-network`、NM 排序 drop-in、
-    roceos 全套 + 3 个 wants 链接 + nginx 站点、EEE 五件套 + 服务/timer enable、ethtool、角色归一三件套；
+    roceos 全套 + 3 个 wants 链接 + nginx 站点、反断言"无任何 EEE 关闭件"、ethtool（官方基线自带）、角色归一三件套；
   - **反断言**：不得出现 `wan1/lan1/lan2` 命名、不得启用 `serial-getty@ttyFIQ0`、nginx `default` 站点必须已移除。
 
 ### 上板（必须实机，未做就是未验证）
@@ -87,7 +87,7 @@ ethtool eth1 | grep -E 'Speed|Link detected'   # 期望 2500Mb/s
 ethtool eth2 | grep -E 'Speed|Link detected'   # 期望 2500Mb/s
 ethtool -p eth2 5                              # 认物理口：闪灯
 
-# 3) EEE 必须全关（否则间歇掉线会复发）
+# 3) EEE 保持官方默认（本仓不再关闭；这里只看状态，不改）
 for i in eth0 eth1 eth2; do echo "== $i"; ethtool --show-eee $i | grep -i 'EEE status'; done
 
 # 4) 驱动与自动加载
@@ -111,7 +111,7 @@ ip link show eth0 | grep ether                 # 重启两次比对，若变化�
    （两个 2.5G 口是 RTL8125 芯片自带 MAC，稳定）。这是上游行为、非本仓引入。
    上板确认后可选修法（择一，未决）：`systemd .link` 的 `MACAddressPolicy=persistent`，或按 SoC
    serial 派生固定 MAC。**在实机确认前不改**（按技能铁律：不要凭空发明机制）。
-3. **EEE 关闭属预防性**：本板未复现过掉线；依据是同族三线实机定案（K1/T68M 的 dwmac+PHY 组合）。
+3. **EEE 不再关闭**：本板从未实测复现过 EEE 相关掉线；2026-10-17 复核后按官方默认保持开启，镜像里不装任何 EEE 关闭件（CI 反向断言）。
    上板按判据第 3 节实测确认；若实测无问题也不会撤（成本为零，收益是防复发）。
 4. **未做**：NVMe 上盘/吞吐实测、LED 四灯行为、USB3、风扇/温度、roceos 各功能页（SMB/Docker/相册 AI）、
    在线内核更新后的自愈路径压测（current 分支驱动均在树内，风险低于 K1 的外挂 PHY 驱动）。
@@ -126,7 +126,7 @@ ip link show eth0 | grep ether                 # 重启两次比对，若变化�
 config/boards/nanopi-r5s.csc     # 上游 csc 的 fork，仅替换网口命名一节（改动处标 ##iNextOS）
 extensions/lyw-rr-roceos.sh      # 注入 roceos 网页后台（官方镜像有、框架没有）
 extensions/lyw-rr-kernel-config.sh  # 断言三口/NVMe/LED 的内核符号（不改值）
-extensions/lyw-rr-net-eee.sh     # 关闭 EEE/LPI（五层持久化，预防性）
+（EEE 关闭扩展已移除：EEE 按官方默认保持开启）
 extensions/lyw-rr-net-roles.sh   # roceos 角色表归一（映射在 /etc/lyw-rr-net-roles.conf）
 tools/verify-image.sh            # 镜像自证（判据即代码；adapted/official 两档）
 .github/workflows/build.yml      # 上游指纹跟踪 + 双 profile 构建 + 自证 + 产物

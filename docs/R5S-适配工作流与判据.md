@@ -22,7 +22,7 @@ iNextOS 的用户态只认 `eth*` + `/etc/eth_order`，两者默认组合会让�
 | 2 | 首启 NetworkManager 先接管网口，与 ifupdown 抢口 → 该有的地址配不上 | `istorenext-init-network.service` 与 `NetworkManager.service` 之间没有排序（`network-pre.target` 未被任何已使能单元拉入），两者并行启动（K1 实机取证 gap G1）| 加 `NetworkManager.service.d/10-r5s-lan-order.conf`：`After=istorenext-init-network.service networking.service` | 构建期断言 drop-in 内容；上板首启后 `ip -br addr` 与 journal 顺序 |
 | 3 | 板子能启动、网络通，但 `http://192.168.100.1/` 是空页面 | 官方 iNextOS 镜像自带 `/opt/roceos`，**上游构建框架不带**，官方靠自己的发布流水线注入 | `lyw-rr-roceos.sh`：从 lyw-OS release 取载荷（sha256 钉死）装进镜像 + 建 3 个 wants 链接 + nginx 站点/证书 + 移除 default 站点 | 构建期断言 8 个文件 + 3 链接 + nginx 站点；上板 `curl -I http://192.168.100.1/` |
 | 4 | roceos 的"设置向导"把 WAN/LAN 角色按枚举顺序分反 | 角色真源是 `/opt/roceos/data/roceos.db` 三张表（`network_interfaces` / `interface_bindings` / `lan_configs`），不是 `factory-env.json`；向导按枚举顺序分配 | `lyw-rr-net-roles.sh`：开机在 roceos 之前按 `/etc/lyw-rr-net-roles.conf` 幂等纠正三张表（MAC 取实机现值，不写死）| 构建期断言脚本/映射/排序；上板 `sqlite3 /opt/roceos/data/roceos.db` 比对口名 |
-| 5 | 2.5G 口"灯亮但拿不到 IP"、整口间歇 Link Down（用网高峰 34 次/3h）| EEE/LPI 省电态进出 7800 万次，唤醒时序在 RK3568 dwmac + PHY 组合上翻车 → 整口重新协商（同族三线实机定案；**本板为预防性**）| `lyw-rr-net-eee.sh`：五层持久化关 EEE（脚本 + 开机服务 + NM dispatcher + ifupdown 钩子 + 30s 兜底 timer）+ 钉 `power/control=on` | 构建期断言五件套 + ethtool；上板 `ethtool --show-eee` 全部 `disabled` |
+| 5 | 2.5G 口"灯亮但拿不到 IP"、整口间歇 Link Down（用网高峰 34 次/3h） | 2026-10-13 曾判为 EEE/LPI 唤醒时序；**2026-10-17 在 T68M 主路由按日志复核推翻**：EEE 本来就是关闭态而掉线仍发生，141 次掉线每次都伴随对端 1–5 s 内重新 DHCP（对端在重启） | **不再关 EEE**：按 iNextOS 官方默认为开启，镜像里不得有 EEE 关闭件（CI 反向断言）；网卡配置只走 DT/官方基线 | 构建期反向断言（无 eee-off 件）；上板看 `ethtool --show-eee` 为官方默认即可 |
 | 6 | 更新流程装固件包时把 `armbian-firmware` 连带卸载 → 网卡固件被删、装不回来 | roceos 的"安装依赖"会装发行版固件包，而 `armbian-firmware` 的 control 里 `Provides`+`Conflicts` 了其中一部分 | apt `Pin-Priority: -1` 禁止清单 + 9 个同名空壳包（不留文件）| 构建期断言 pin 文件 |
 | 7 | 上游某天把网口/NVMe/LED 的内核符号改成内建或关掉，只有上板才发现 | 这些符号在上游 config 里是**默认值**而非显式声明 | `lyw-rr-kernel-config.sh` **不改值**，只逐符号断言 + Kconfig 入口自检 | 构建期（构建失败早于镜像产出）+ `verify-image.sh` 断言镜像内 config |
 
@@ -51,7 +51,7 @@ echo "6b819584a1b1701163f8983bd59a31821643f64dd65c76ba8f500ef54c5e8bb5  build/us
 
 cd build && ./compile.sh build \
   BOARD=nanopi-r5s BRANCH=current RELEASE=trixie \
-  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-eee,lyw-rr-net-roles" \
+  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles" \
   BUILD_MINIMAL=no BUILD_DESKTOP=no KERNEL_CONFIGURE=no \
   COMPRESS_OUTPUTIMAGE="sha,img,xz" SHARE_LOG=yes EXPERT=yes
 ```
@@ -79,7 +79,7 @@ sudo dd if=/dev/sdX bs=4M count=$(( $(stat -c%s output/images/*.img) / 4194304 +
 
 ## 5. 一板一轮的纪律（技能铁律，别一次改多处）
 
-- 上板一轮**只验证一类改动**：先验「启动 + 三口身份/地址」，再验「EEE 实测」，最后验「角色/后台功能」。
+- 上板一轮**只验证一类改动**：先验「启动 + 三口身份/地址」，再验「EEE 为官方默认（不做关闭）」，最后验「角色/后台功能」。
   混在一轮里出问题时无法归因。
 - 任何 DTB/板级配置改动都必须带**同版本的回归断言**（本仓断言写在 `tools/verify-image.sh`，改动同 PR 提交）。
 - 未上板的结论一律标注"未验证"，并在上板后把实测输出补进本文件的判据表。
