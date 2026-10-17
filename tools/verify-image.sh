@@ -36,9 +36,11 @@ else
 	PROFILE="${2:-adapted}"
 fi
 FAIL=0
+RROOT=$(cd "$(dirname "$0")" && pwd)   # 本脚本所在目录（tools/）——共用判据脚本都在这里
 
 ok()   { echo "  OK   $*"; }
 bad()  { echo "  !!   $*"; FAIL=1; }
+warn() { echo "  WARN $*"; }           # 非致命提示（不影响退出码）
 info() { echo "       $*"; }
 
 # 在目标 rootfs 里找某 unit 的 enable 链接（任意 *.wants/）：
@@ -55,8 +57,16 @@ echo "--- sha256:"; sha256sum "$IMG" || true
 if [ -f "${IMG}.sha" ]; then
 	EXP=$(awk '{print $1}' "${IMG}.sha" 2>/dev/null | head -c 64)
 	ACT=$(sha256sum "$IMG" | awk '{print $1}')
-	[ -n "$EXP" ] && { [ "$EXP" = "$ACT" ] && ok "构建产物 .sha 与实算 sha256 一致（$ACT）" \
-		|| bad "构建产物 .sha 与实算 sha256 不一致（.sha=$EXP 实算=$ACT）"; }
+	if [ -z "$EXP" ]; then
+		bad "构建产物 ${IMG}.sha 是空的（没法证明磁盘上这份镜像就是 CI 打印的那份）"
+	elif [ "$EXP" = "$ACT" ]; then
+		ok "构建产物 .sha 与实算 sha256 一致（$ACT）"
+	else
+		bad "构建产物 .sha 与实算 sha256 不一致（.sha=$EXP 实算=$ACT）"
+	fi
+elif [ "$PROBE" = "0" ]; then
+	# workflow 用 COMPRESS_OUTPUTIMAGE="sha,img,xz" 出 .sha sidecar；缺了说明产物链断了
+	bad "缺 ${IMG}.sha（产物校验凭据缺失，写卡前无法与 CI 日志对账）"
 fi
 
 if ! command -v dtc >/dev/null 2>&1; then
@@ -337,8 +347,25 @@ if [ "$PROFILE" = "adapted" ]; then
 	[ -x /mnt/ir/usr/local/sbin/lyw-rr-net-roles.py ] && ok "角色脚本在位" || bad "缺 lyw-rr-net-roles.py"
 	python3 -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" \
 		/mnt/ir/usr/local/sbin/lyw-rr-net-roles.py 2>/dev/null && ok "角色脚本语法通过" || bad "角色脚本语法错误"
-	grep -q 'ROLE_MAP' /mnt/ir/etc/lyw-rr-net-roles.conf 2>/dev/null && ok "角色映射文件在位" || bad "缺角色映射文件"
-	grep -q 'lan2=eth2' /mnt/ir/etc/lyw-rr-net-roles.conf 2>/dev/null && ok "映射含三口（lan2=eth2）" || bad "角色映射不全"
+	# 角色映射：断言【语义】而不是某次定案的字符串（2026-10-17 run #14 的教训 ——
+	# 默认值从「wan1/lan1/lan2 三口各一」改成「wan1=eth0 lan1=eth1,eth2」后，
+	# 这里还留着 `grep -q 'lan2=eth2'` → 4.7GB 镜像全部断言绿、只这一行红，117 分钟白跑）。
+	# 口径只定义在 tools/role-map-check.py（同一份判据也跑在构建早期对仓库默认值上）。
+	ROLE_CONF=/mnt/ir/etc/lyw-rr-net-roles.conf
+	if [ -f "$ROLE_CONF" ]; then
+		ok "角色映射文件在位"
+		if ! command -v python3 >/dev/null 2>&1; then
+			bad "镜像自证需要 python3（用于角色映射语义判定），当前 runner 没有"
+		elif ROUT=$(python3 "$RROOT/role-map-check.py" --conf "$ROLE_CONF" 2>&1); then
+			echo "$ROUT" | sed 's/^/       /'
+			ok "ROLE_MAP 符合本板口径（三口各一次 + 1G 当 WAN + 两个 2.5G 同 LAN 桥）"
+		else
+			echo "$ROUT" | sed 's/^/       /'
+			bad "ROLE_MAP 不符合本板口径（见上面 !! 行；判据=tools/role-map-check.py）"
+		fi
+	else
+		bad "缺角色映射文件（角色归一没有真源，网口角色会随 roceos 向导漂移）"
+	fi
 	SL=$(wants_link lyw-rr-net-roles.service); [ -n "$SL" ] \
 		&& ok "角色服务已 enable（${SL#/mnt/ir}）" || bad "角色服务未 enable"
 	grep -q '^Before=roceos.service' /mnt/ir/etc/systemd/system/lyw-rr-net-roles.service 2>/dev/null \

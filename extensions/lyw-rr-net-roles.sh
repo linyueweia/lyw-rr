@@ -278,10 +278,36 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 		display_alert "lyw-rr-net-roles.py 语法错误" "$EXTENSION" "err"; fail=1; }
 	grep -q '/opt/roceos/data/roceos.db' "${SDCARD}/usr/local/sbin/lyw-rr-net-roles.py" || {
 		display_alert "纠正脚本没指向 roceos.db（改错地方 = 无效）" "$EXTENSION" "err"; fail=1; }
-	grep -q 'ROLE_MAP' "${SDCARD}/etc/lyw-rr-net-roles.conf" || {
-		display_alert "角色映射文件缺 ROLE_MAP" "$EXTENSION" "err"; fail=1; }
-	grep -q 'ROLE_MAP="wan1=eth0 lan1=eth1,eth2"' "${SDCARD}/etc/lyw-rr-net-roles.conf" || {
-		display_alert "角色映射默认值不对（应为 wan1=eth0 lan1=eth1,eth2：1G 当 WAN、两个 2.5G 同桥）" "$EXTENSION" "err"; fail=1; }
+	# 角色映射自检：只断言【结构】（ROLE_MAP 可解析、wan*/lan* 角色在、端口不重复），
+	# 不抄默认值字面量 —— 具体口径（哪个口当 WAN、两个 2.5G 是否同桥）由 tools/role-map-check.py
+	# 在「构建早期」和「镜像自证」两处判。把值再抄一份到这里，改默认值时必然漏改一处
+	# （2026-10-17 run #14：自证脚本里还留着旧口径的字面量 → 4.7GB 镜像全部绿、只那一行红，117 分钟白跑）。
+	_ROLE_CONF="${SDCARD}/etc/lyw-rr-net-roles.conf"
+	_ROLE_RAW=$(sed -n 's/^[[:space:]]*ROLE_MAP="\(.*\)"[[:space:]]*$/\1/p' "$_ROLE_CONF" 2>/dev/null | tail -1)
+	if [ -z "$_ROLE_RAW" ]; then
+		display_alert "角色映射缺 ROLE_MAP（期望形如 ROLE_MAP=\"wan1=eth0 lan1=eth1,eth2\"）" "$EXTENSION" "err"
+		fail=1
+	else
+		_ROLE_NAMES=""; _ROLE_PORTS=""
+		for _item in $_ROLE_RAW; do
+			case "$_item" in *=*) ;; *) continue ;; esac
+			_ROLE_NAMES="$_ROLE_NAMES ${_item%%=*}"
+			for _p in $(printf '%s' "${_item#*=}" | tr '+' ' ' | tr ',' ' '); do
+				_ROLE_PORTS="$_ROLE_PORTS $_p"
+			done
+		done
+		_port_n=$(printf '%s\n' $_ROLE_PORTS | sed '/^$/d' | wc -l)
+		_uniq_n=$(printf '%s\n' $_ROLE_PORTS | sed '/^$/d' | sort -u | wc -l)
+		_ok=1
+		printf '%s\n' $_ROLE_NAMES | grep -q '^wan' || _ok=0        # 必须有 WAN 角色
+		printf '%s\n' $_ROLE_NAMES | grep -q '^lan' || _ok=0        # 必须有 LAN（桥）角色
+		[ "$_port_n" -ge 2 ] || _ok=0                               # 至少两口
+		[ "$_port_n" = "$_uniq_n" ] || _ok=0                        # 同一口不得被两个角色占用
+		for _p in $_ROLE_PORTS; do case "$_p" in eth[0-9]*) ;; *) _ok=0 ;; esac; done
+		[ "$_ok" = 1 ] || {
+			display_alert "角色映射不可用（端口数=$_port_n 去重后=$_uniq_n，角色=[$_ROLE_NAMES ]）：缺 wan*/lan* 角色或端口重复" "$EXTENSION" "err"
+			fail=1; }
+	fi
 	grep -q 'orphans' "${SDCARD}/usr/local/sbin/lyw-rr-net-roles.py" || {
 		display_alert "角色脚本缺孤儿口并入 LAN 桥逻辑" "$EXTENSION" "err"; fail=1; }
 	grep -q 'MARK' "${SDCARD}/usr/local/sbin/lyw-rr-net-roles.py" || {
@@ -293,6 +319,13 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 	mkdir -p "${SDCARD}/etc/systemd/system/multi-user.target.wants"
 	ln -sf /etc/systemd/system/lyw-rr-net-roles.service \
 		"${SDCARD}/etc/systemd/system/multi-user.target.wants/lyw-rr-net-roles.service"
+	# 使能链接必须真的存在：判「链接」只能用 -L（目标是绝对路径，-e 会按 runner 自己的根解析成悬空 → 假红/假绿）
+	# 本地 MSYS 无建链特权（ln -s 直接失败），可用 LYW_RR_SKIP_SYMLINK_ASSERT=1 跳过这一条，CI 上必须生效。
+	if [ "${LYW_RR_SKIP_SYMLINK_ASSERT:-0}" != "1" ]; then
+		[[ -L "${SDCARD}/etc/systemd/system/multi-user.target.wants/lyw-rr-net-roles.service" ]] || {
+			display_alert "角色服务使能链接没建出来（首启不会跑 → 角色永远是 roceos 向导分配的那个）" \
+				"$EXTENSION" "err"; fail=1; }
+	fi
 
 	[[ $fail == 0 ]] || exit_with_error "NanoPi R5S NIC role normalizer self-check failed"
 	display_alert "NIC role normalizer verified in image" "$EXTENSION" "info"

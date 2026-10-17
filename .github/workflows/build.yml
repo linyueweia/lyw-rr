@@ -2,7 +2,7 @@ name: Build iNextOS for NanoPi R5S
 
 # 两档 profile（手动触发时选择）：
 #   adapted  —— 本仓适配层：上游框架 + 覆盖板级 csc（iNextOS 口名/角色）+ roceos 后台
-#               + EEE 关闭 + 角色归一。默认档。
+#               + 角色归一（EEE 不关，按官方默认）。默认档。
 #   official —— 纯官方基线：上游 armbian-easepi 自带的 nanopi-r5s.csc + istorenext
 #               扩展，一行都不改。用途＝权威对照物（也是本仓丢了的那份参照镜像是谁）。
 on:
@@ -150,6 +150,19 @@ jobs:
             || { echo "!! kernel-config 扩展缺钩子"; exit 1; }
           grep -q 'ROCEOS_PAYLOAD_SHA256' build/userpatches/extensions/lyw-rr-roceos.sh \
             || { echo "!! roceos 扩展缺载荷指纹"; exit 1; }
+
+      # ── 角色映射判据（秒级；把「最后一分钟才红」的那类事故提前到构建前）──────────
+      # 2026-10-17 run #14：默认 ROLE_MAP 改了，镜像自证里还留着旧口径的字面量 →
+      # 4.7GB 镜像全部断言绿、只在最后一行红，117 分钟白跑。判据现在单点定义在
+      # tools/role-map-check.py：这里对【仓库里将要写进镜像的默认值】跑一遍，
+      # 构建后再对【镜像里实际落盘的那份】跑同一份判据。
+      - name: Lint NIC role-map policy (adapted)
+        if: github.event.inputs.profile != 'official'
+        run: |
+          set -e
+          python3 rr/tools/role-map-check.py --src rr/extensions/lyw-rr-net-roles.sh
+          # 判据脚本自身的负例自测：漏口/重复口/WAN 吞并 2.5G/默认值被抄了第二份，四种必红形态
+          bash rr/tools/tests/role-map-check-test.sh
 
       - name: Fetch roceos web-UI payload into userpatches/overlay (adapted)
         if: github.event.inputs.profile != 'official'

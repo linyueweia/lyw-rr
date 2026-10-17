@@ -63,11 +63,15 @@
 - **注入前**：csc 里三条 udev 规则 + `DEFAULT_INTERFACE=eth2` 必须在；上游 `wan1/lan1/lan2` 命名必须已不存在；
   四个扩展的钩子/载荷指纹必须在。
 - **roceos 载荷**：sha256 = `6b819584…8bb5` 校验。
+- **角色映射（构建前，秒级）**：`tools/role-map-check.py --src` 对扩展将要写进镜像的默认 `ROLE_MAP` 判口径
+  （三口各一次 / 1G 当 WAN / 两个 2.5G 同桥），并拒绝「默认值被抄到别处第二份」；判据脚本自带 15 例负例自测
+  （`tools/tests/role-map-check-test.sh`）。构建后再用同一份判据对镜像里那份 `ROLE_MAP` 判一遍。
 - **构建后**：`tools/verify-image.sh <img> <profile>` 逐项断言（本仓"判据即代码"），要点：
+  - 产物 `.sha` 必须在且与实算 sha256 一致（写卡前靠它跟 CI 日志对账）；
   - bootfs `armbianEnv.txt` 指向 `rk3568-nanopi-r5s.dtb`，DTB 的 `model`/`compatible` 是 R5S，
     `ethernet@fe2a0000` + 三个 PCIe 控制器都 `okay`；
   - 内核 config：`STMMAC_ETH=m`、`R8169=m`、`BLK_DEV_NVME=y`、`LEDS_GPIO=y`、`PCIE_DW_PLAT_HOST=y`、`PCI_MSI=y`；
-  - rootfs 真有 `r8169.ko` / `dwmac-rockchip.ko` / `stmmac.ko`，且 `modules.dep` 收录 `r8169`（自动加载）；
+  - rootfs 真有 `r8169.ko` / `dwmac-rk.ko` / `stmmac.ko`，且 `modules.dep` 收录 `r8169`（自动加载）；
   - iNextOS 两件套在、`fix-ifaces-name.service` / `istorenext-init-network.service` 已 enable；
   -（adapted）三条 udev 规则、`/etc/eth_order` 精确内容、`/root/.default-network`、NM 排序 drop-in、
     roceos 全套 + 3 个 wants 链接 + nginx 站点、反断言"无任何 EEE 关闭件"、ethtool（官方基线自带）、角色归一三件套；
@@ -129,6 +133,8 @@ extensions/lyw-rr-kernel-config.sh  # 断言三口/NVMe/LED 的内核符号（�
 （EEE 关闭扩展已移除：EEE 按官方默认保持开启）
 extensions/lyw-rr-net-roles.sh   # roceos 角色表归一（映射在 /etc/lyw-rr-net-roles.conf）
 tools/verify-image.sh            # 镜像自证（判据即代码；adapted/official 两档）
+tools/role-map-check.py          # ROLE_MAP 口径判据（构建早期对仓库默认值 + 构建后对镜像里那份，同一份代码）
+tools/tests/                     # 判据脚本自测（布局探测辅助函数 / role-map 负例），构建前必跑
 .github/workflows/build.yml      # 上游指纹跟踪 + 双 profile 构建 + 自证 + 产物
 docs/R5S-适配工作流与判据.md      # 现象→根因→修复→验收 表 + 上板流程
 ```
