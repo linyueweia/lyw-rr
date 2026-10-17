@@ -28,10 +28,12 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 
 	# ── 角色映射（唯一可改点）─────────────────────────────────────────────
 	cat <<- 'EOF' > "${SDCARD}/etc/lyw-rr-net-roles.conf"
-		# NanoPi R5S / iNextOS 网口角色映射（roceos binding 名 = 物理口）
-		# 左=roceos 的 binding 名，右=物理口名（由 udev + /etc/eth_order 钉死）
-		# 依据：上游 nanopi-r5s.csc 的角色口径 wan1=千兆 / lan1=2.5G#1 / lan2=2.5G#2
-		ROLE_MAP="wan1=eth0 lan1=eth1 lan2=eth2"
+		# NanoPi R5S / iNextOS 默认网口角色（2026-10-17 定案：WAN=1G，两个 2.5G 同属一个 LAN 桥）
+		#   左=roceos 的 binding 名，右=物理口名（udev + /etc/eth_order 钉死）；逗号=同一桥的多个成员
+		#   丝印：LAN2(2.5G,最左)=eth2 / LAN1(2.5G,中间)=eth1 / WAN(1G,最右)=eth0
+		#   默认：eth0 单独当 WAN；eth1+eth2 一起进 lan1 桥（192.168.100.1 在桥上，插任一 2.5G 口都能进）
+		#   只在首启套用一次；之后用户在网页后台怎么改都保留（脚本只修名字漂移、把孤儿口并入 LAN 桥）。
+		ROLE_MAP="wan1=eth0 lan1=eth1,eth2"
 	EOF
 
 	cat <<- 'EOF' > "${SDCARD}/usr/local/sbin/lyw-rr-net-roles.py"
@@ -107,14 +109,16 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 		    for item in raw.split():
 		        if "=" in item:
 		            k, v = item.split("=", 1)
-		            out[k.strip()] = v.strip()
+		            devs = [x for x in v.replace("+", ",").split(",") if x]
+		            out[k.strip()] = devs
 		    return out
 
 
 		# 等所有网口枚举完（第二 PCIe domain 的 2.5G 可能比 roceos 建库晚很久）
 		WANT = want_map()
 		deadline = time.time() + 90
-		while time.time() < deadline and len(live_ifaces()) < max(len(WANT), 3):
+		need = max(sum(len(v) for v in WANT.values()), 3)
+		while time.time() < deadline and len(live_ifaces()) < need:
 		    time.sleep(3)
 
 		if not os.path.exists(DB):
@@ -140,19 +144,37 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 
 		# ── 首启（只做一次）：按 ROLE_MAP 把 roceos 向导分配的 role→口 纠正成本板口径 ──
 		if not os.path.exists(MARK):
-		    for name, dev in WANT.items():
-		        if not os.path.exists("/sys/class/net/" + dev):
+		    devs_of = {k: [d for d in v if os.path.exists("/sys/class/net/" + d)] for k, v in WANT.items()}
+		    for name, devs in devs_of.items():
+		        if not devs:
 		            continue
-		        mac = mac_of(dev)
+		        want_nics = json.dumps(devs)
+		        want_macs = json.dumps([mac_of(d) for d in devs])
 		        for bid, bname, itype, nics, macs in bindings:
 		            if bname != name:
 		                continue
-		            want_nics = json.dumps([dev])
-		            want_macs = json.dumps([mac]) if mac else macs
 		            if nics != want_nics:
 		                cur.execute("update interface_bindings set physical_nics=?, physical_nic_macs=?, updated_at=? "
 		                            "where id=?", (want_nics, want_macs, TS, bid))
 		                fixed.append("首启 %s: %s→%s" % (name, nics, want_nics))
+		            if bname.startswith("lan"):
+		                cur.execute("update lan_configs set nic_ids=?, updated_at=? where binding_id=?",
+		                            (want_nics, TS, bid))
+		                fixed.append("首启网桥 %s.nic_ids=%s" % (bname, want_nics))
+		    # 其它 lan* binding 若与本仓桥成员重叠（例：roceos 另外建了 lan2），让出该口，避免两口争用
+		    lan_devs = set(d for k, v in devs_of.items() if k.startswith("lan") for d in v)
+		    for bid, bname, itype, nics, macs in bindings:
+		        if not bname.startswith("lan") or bname in devs_of:
+		            continue
+		        try:
+		            cur_list = json.loads(nics or "[]")
+		        except ValueError:
+		            cur_list = []
+		        keep = [x for x in cur_list if x not in lan_devs]
+		        if keep != cur_list:
+		            cur.execute("update interface_bindings set physical_nics=?, physical_nic_macs=?, updated_at=? "
+		                        "where id=?", (json.dumps(keep), json.dumps([mac_of(x) for x in keep]), TS, bid))
+		            fixed.append("首启让出口 %s: %s→%s" % (bname, cur_list, keep))
 		    try:
 		        open(MARK, "w").write(TS + "\n")
 		    except OSError as e:
@@ -258,8 +280,12 @@ function post_post_debootstrap_tweaks__lyw_rr_net_roles() {
 		display_alert "纠正脚本没指向 roceos.db（改错地方 = 无效）" "$EXTENSION" "err"; fail=1; }
 	grep -q 'ROLE_MAP' "${SDCARD}/etc/lyw-rr-net-roles.conf" || {
 		display_alert "角色映射文件缺 ROLE_MAP" "$EXTENSION" "err"; fail=1; }
-	grep -q 'lan2=eth2' "${SDCARD}/etc/lyw-rr-net-roles.conf" || {
-		display_alert "角色映射缺 lan2=eth2（本板三口映射不全）" "$EXTENSION" "err"; fail=1; }
+	grep -q 'ROLE_MAP="wan1=eth0 lan1=eth1,eth2"' "${SDCARD}/etc/lyw-rr-net-roles.conf" || {
+		display_alert "角色映射默认值不对（应为 wan1=eth0 lan1=eth1,eth2：1G 当 WAN、两个 2.5G 同桥）" "$EXTENSION" "err"; fail=1; }
+	grep -q 'orphans' "${SDCARD}/usr/local/sbin/lyw-rr-net-roles.py" || {
+		display_alert "角色脚本缺孤儿口并入 LAN 桥逻辑" "$EXTENSION" "err"; fail=1; }
+	grep -q 'MARK' "${SDCARD}/usr/local/sbin/lyw-rr-net-roles.py" || {
+		display_alert "角色脚本缺首启 marker（会每次开机覆盖用户设置）" "$EXTENSION" "err"; fail=1; }
 	[[ -f "${SDCARD}/etc/systemd/system/lyw-rr-net-roles.service" ]] || {
 		display_alert "角色纠正 unit 缺失" "$EXTENSION" "err"; fail=1; }
 	grep -q 'Before=roceos.service' "${SDCARD}/etc/systemd/system/lyw-rr-net-roles.service" || {

@@ -20,9 +20,9 @@
 
 | 口名 | 设备路径 | 物理口 | 角色（对齐上游口径）|
 |---|---|---|---|
-| `eth0` | `fe2a0000.ethernet` | 板载千兆 GMAC0 | WAN |
-| `eth1` | `0000:01:00.0` | PCIe domain 0（`pcie3x2`）上的 2.5G | LAN1 |
-| `eth2` | `0001:11:00.0` | PCIe domain 1（`pcie3x1`）上的 2.5G | LAN2 → **192.168.100.1**（网页后台）|
+| `eth0` | `fe2a0000.ethernet` | WAN 丝印（1G） | **WAN**（默认） |
+| `eth1` | `0000:01:00.0` | PCIe domain 0（`pcie3x2`）上的 2.5G | LAN1 | **LAN 桥成员**（默认） |
+| `eth2` | `0001:11:00.0` | PCIe domain 1（`pcie3x1`）上的 2.5G | LAN2 → **192.168.100.1**（网页后台） | **LAN 桥成员**（默认，192.168.100.1 在桥上） |
 
 证据：
 1. 主线 `rk3568-nanopi-r5s.dts`：`aliases { ethernet0 = &gmac0; }`、`&pcie3x2/&pcie3x1/&pcie2x1` 全 `okay`、
@@ -45,7 +45,7 @@
 | roceos 网页后台（`/opt/roceos` + 3 个服务 + nginx 站点/证书）| 官方镜像**有**、框架**没有** → 本仓注入 | `lyw-rr-roceos.sh`；载荷取自 lyw-OS release，sha256 钉死 |
 | 网口命名钉定（udev 三规则 + `/etc/eth_order` + `.default-network` + NM 排序 drop-in）| **本仓适配**（替换上游 wan1/lan1/lan2）| 上游命名与 iNextOS 的 `eth*` 网络链不兼容：口名/后台地址会随内核探测顺序漂移 |
 | EEE/LPI | **不关闭**（官方默认开启）| 2026-10-13 曾按"同族三线"判为 EEE 唤醒时序问题并做了五层关闭；2026-10-17 在 T68M 主路由按日志复核推翻（EEE 本是关闭态而掉线仍发生，141 次掉线均伴随对端重启）→ 本仓改为与官方一致：镜像里不得有 EEE 关闭件，CI 反向断言 |
-| roceos 角色归一（`roceos.db` 三张表）| **本仓适配** | 配置在 `/etc/lyw-rr-net-roles.conf`，想换角色只改这一个文件 |
+| roceos 角色归一（`roceos.db` 三张表）| **本仓适配** | 默认 `ROLE_MAP="wan1=eth0 lan1=eth1,eth2"`（1G 当 WAN，两个 2.5G 同属 LAN 桥）；**只在首启套用一次**，之后网页后台改的角色不会被覆盖；脚本只修名字漂移 + 把孤儿口并入 LAN 桥 |
 
 ## 两档构建 profile
 
@@ -78,7 +78,7 @@
 ```bash
 # 1) 三口身份与角色
 cat /etc/eth_order                       # 期望 fe2a0000.ethernet,0000:01:00.0,0001:11:00.0
-ip -br addr                              # 期望 192.168.100.1 落在 eth2；eth0 空（等 WAN 插线）
+ip -br addr                              # 期望 192.168.100.1 落在 br-lan1（成员 eth1+eth2）；eth0 空（等 WAN 插线）
 for i in /sys/class/net/eth*; do echo "$i $(cat $i/address) speed=$(cat $i/speed 2>/dev/null)"; done
 
 # 2) 三口逐一插线（每个口都插一次，确认 link + 速率）
