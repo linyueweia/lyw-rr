@@ -373,17 +373,25 @@ if [ "$PROFILE" = "adapted" ]; then
 		&& ok "角色服务排在 roceos 之前" || bad "角色服务排序不对（改了库也要重启才生效）"
 
 	echo
-	echo "=== [适配层] 风扇温控（纯 DT：pwm-fan + cpu-thermal active trips，内核 step_wise 控速）"
-	# 2026-10-19 起风扇改由 DT + 内核 thermal 控速，镜像里不该再有用户态风扇脚本/服务。
-	# （原先那套 r5s-fan-control.sh + r5s-fan.service + 构建期自检被自己的正则判死过，
-	#  两小时构建白跑；换成 DT 后这一整类判据都消失了。）
-	if [ ! -e /mnt/ir/usr/local/sbin/r5s-fan-control.sh ] \
-	   && [ -z "$(wants_link r5s-fan.service)" ] \
-	   && [ ! -e /mnt/ir/etc/systemd/system/r5s-fan.service ]; then
-		ok "无用户态风扇件（脚本/unit/enable 都不在，符合 DT 控速）"
+	echo "=== [适配层] 风扇温控（pwm-fan overlay + 18C→45C 曲线）"
+	FANSH=/mnt/ir/usr/local/sbin/r5s-fan-control.sh
+	if [ -x "$FANSH" ]; then
+		ok "风扇控制脚本在位"
+		bash -n "$FANSH" 2>/dev/null && ok "风扇脚本语法通过" || bad "风扇脚本语法错误"
+		grep -q '^START_C=18$' "$FANSH" && ok "起始温度 = 18C" || bad "起始温度不是 18C"
+		grep -q '^FULL_C=45$' "$FANSH" && ok "满速温度 = 45C" || bad "满速温度不是 45C"
+		# 按 type 字段识别（不写死 cooling_deviceN）；用固定串匹配真正的比较那一行，
+		# 别用 grep pwm-fan —— 脚本头部注释就写着 "(type=pwm-fan)"，会假绿。
+		grep -qF '= "pwm-fan"' "$FANSH" && ok "按 type 字段识别 pwm-fan" || bad "没按 type=pwm-fan 识别设备"
+		if grep -qE 'cooling_device[0-9]' "$FANSH"; then
+			bad "风扇脚本写死了 cooling_deviceN（换内核设备号会写错设备）"
+		fi
 	else
-		bad "镜像里仍有用户态风扇件（与 DT 控速重复，会抢 cur_state）"
+		bad "缺 $FANSH（风扇不调速）"
 	fi
+	[ -f /mnt/ir/etc/systemd/system/r5s-fan.service ] && ok "风扇 unit 在位" || bad "缺 r5s-fan.service"
+	SL=$(wants_link r5s-fan.service); [ -n "$SL" ] \
+		&& ok "风扇服务已 enable（${SL#/mnt/ir}）" || bad "风扇服务未 enable（开机不转）"
 	# overlay 是否真的装进 boot 并进了 armbianEnv 的 overlays 列表
 	FDTBO=""
 	for c in "$BOOTDIR/dtb/rockchip/overlay/rockchip-rk3568-nanopi-r5s-fan.dtbo" \
@@ -392,48 +400,12 @@ if [ "$PROFILE" = "adapted" ]; then
 	done
 	if [ -n "$FDTBO" ]; then
 		ok "风扇 overlay 在位: $FDTBO ($(stat -c%s "$FDTBO") B)"
-		FANDS=$(mktemp)
-		dtc -I dtb -O dts "$FDTBO" -o "$FANDS" 2>/dev/null \
-			|| sudo dtc -I dtb -O dts "$FDTBO" -o "$FANDS"
-		grep -q 'compatible = "pwm-fan"' "$FANDS" \
+		dtc -I dtb -O dts "$FDTBO" -o /tmp/r5s-fan.dtso.dts 2>/dev/null \
+			|| sudo dtc -I dtb -O dts "$FDTBO" -o /tmp/r5s-fan.dtso.dts
+		grep -q 'pwm-fan' /tmp/r5s-fan.dtso.dts \
 			&& ok "overlay 含 pwm-fan 节点" || bad "overlay 里没有 pwm-fan 节点"
-		grep -q 'pwm@fdd70000' "$FANDS" \
+		grep -q 'pwm@fdd70000' /tmp/r5s-fan.dtso.dts \
 			&& ok "overlay 目标为 pwm@fdd70000（pwm0）" || bad "overlay 没指向 pwm0"
-		grep -q 'target-path = "/thermal-zones/cpu-thermal"' "$FANDS" \
-			&& ok "overlay 挂到 cpu-thermal（内核 thermal 接管）" || bad "overlay 没挂到 cpu-thermal"
-		# 10 个 active trip + 10 条 cooling-map，且第一条能把风扇拉回 0（低温停转）
-		TRIPS=$(grep -c 'fan-trip[0-9]* {' "$FANDS" || true)
-		[ "${TRIPS:-0}" -ge 10 ] && ok "active trip ${TRIPS} 个" || bad "active trip 不足（$TRIPS）"
-		MAPS=$(grep -c 'fan-map[0-9]* {' "$FANDS" || true)
-		[ "${MAPS:-0}" -ge 10 ] && ok "cooling-map ${MAPS} 条" || bad "cooling-map 不足（$MAPS）"
-		grep -qE 'cooling-device = <0x[0-9a-f]+ 0x0+ 0x2>' "$FANDS" \
-			&& ok "最低档 instance 用 lower=0（≤19C 能停转）" \
-			|| bad "最低档 instance 没有 lower=0（低温不会停转）"
-		# 真正的合并验证：把 overlay 套到镜像里的 base DTB 上（u-boot 开机做同一件事）。
-		# 少 __symbols__ / 节点名对不上会在这里就红，而不是刷到板上开不了机。
-		BASE=""
-		for b in "$BOOTDIR/dtb/rockchip/rk3568-nanopi-r5s.dtb" \
-			/mnt/ir/boot/dtb/rockchip/rk3568-nanopi-r5s.dtb; do
-			[ -f "$b" ] && BASE="$b" && break
-		done
-		if [ -n "$BASE" ] && command -v fdtoverlay >/dev/null 2>&1; then
-			MERGED=$(mktemp); MERGEDS=$(mktemp)
-			if fdtoverlay -i "$BASE" -o "$MERGED" "$FDTBO" 2>/dev/null \
-			   && dtc -I dtb -O dts "$MERGED" -o "$MERGEDS" 2>/dev/null; then
-				MT=$(grep -c 'fan-trip[0-9]* {' "$MERGEDS" || true)
-				[ "${MT:-0}" -ge 10 ] && ok "合并进 base DTB 后 fan trip ${MT} 个（u-boot 开机同一路径）" \
-					|| bad "合并后 fan trip 只剩 ${MT:-0} 个"
-				grep -q 'cpu_alert' "$MERGEDS" \
-					&& ok "原有 cpu_alert（降频 trip）与 cooling-map 保留" \
-					|| bad "原有的 cpu_alert trip 被覆盖了（会丢降频保护）"
-			else
-				bad "fdtoverlay 合并失败（u-boot 开机也会失败 → 风扇不生效）"
-			fi
-			rm -f "$MERGED" "$MERGEDS"
-		else
-			ok "跳过合并验证（缺 base DTB 或缺 fdtoverlay）"
-		fi
-		rm -f "$FANDS"
 	else
 		bad "镜像里找不到 rockchip-rk3568-nanopi-r5s-fan.dtbo"
 	fi
