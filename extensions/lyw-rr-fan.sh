@@ -8,7 +8,7 @@
 #   负责把 pwm0 打开并挂上 pwm-fan 驱动；本扩展负责「怎么转」：
 #
 #   需求（用户定案）：18°C 开始转，温度越高越快。
-#   实现：读 thermal_zone0（cpu-thermal），按 18C→55C 线性映射成 32 档占空比，
+#   实现：读 thermal_zone0（cpu-thermal），按 18C→45C 线性映射成 32 档占空比，
 #         写 /sys/class/thermal/cooling_deviceN/cur_state（pwm-fan 的档位接口）。
 #         5 秒采样一次，值不变就不写（避免无谓唤醒）。
 #
@@ -19,17 +19,17 @@
 # ══════════════════════════════════════════════════════════════════════════
 
 function post_post_debootstrap_tweaks__lyw_rr_fan() {
-	display_alert "Installing R5S fan curve (18C start -> 55C full)" "$EXTENSION" "info"
+	display_alert "Installing R5S fan curve (18C start -> 45C full)" "$EXTENSION" "info"
 
 	mkdir -p "${SDCARD}/usr/local/sbin" "${SDCARD}/etc/systemd/system"
 
 cat <<'FANSH' > "${SDCARD}/usr/local/sbin/r5s-fan-control.sh"
 #!/bin/bash
-# NanoPi R5S fan curve: <=18C off, linear ramp to 100% at 55C.
+# NanoPi R5S fan curve: <=18C off, linear ramp to 100% at 45C.
 # Interface: /sys/class/thermal/cooling_deviceN/cur_state (type=pwm-fan).
 TZONE=/sys/class/thermal/thermal_zone0/temp
 START_C=18
-FULL_C=55
+FULL_C=45
 INTERVAL=5
 
 find_cd() {
@@ -69,7 +69,7 @@ FANSH
 
 cat <<'FANUNIT' > "${SDCARD}/etc/systemd/system/r5s-fan.service"
 [Unit]
-Description=NanoPi R5S PWM fan curve (start 18C, full 55C)
+Description=NanoPi R5S PWM fan curve (start 18C, full 45C)
 After=systemd-modules-load.service
 
 [Service]
@@ -95,8 +95,8 @@ FANUNIT
 		display_alert "风扇控制脚本语法错误" "$EXTENSION" "err"; fail=1; }
 	grep -q '^START_C=18$' "${SDCARD}/usr/local/sbin/r5s-fan-control.sh" || {
 		display_alert "风扇起始温度不是 18C" "$EXTENSION" "err"; fail=1; }
-	grep -q '^FULL_C=55$' "${SDCARD}/usr/local/sbin/r5s-fan-control.sh" || {
-		display_alert "风扇满速温度不是 55C" "$EXTENSION" "err"; fail=1; }
+	grep -q '^FULL_C=45$' "${SDCARD}/usr/local/sbin/r5s-fan-control.sh" || {
+		display_alert "风扇满速温度不是 45C" "$EXTENSION" "err"; fail=1; }
 	grep -q 'type)... = "pwm-fan"' "${SDCARD}/usr/local/sbin/r5s-fan-control.sh" || {
 		display_alert "风扇脚本没有按 type=pwm-fan 找 cooling_device（换内核会写错设备）" "$EXTENSION" "err"; fail=1; }
 	[ -f "${SDCARD}/etc/systemd/system/r5s-fan.service" ] || {
@@ -107,6 +107,6 @@ FANUNIT
 	fi
 
 	[[ $fail == 0 ]] || exit_with_error "NanoPi R5S fan control self-check failed"
-	display_alert "Fan control verified in image (18C -> 55C, 32 steps)" "$EXTENSION" "info"
+	display_alert "Fan control verified in image (18C -> 45C, 32 steps)" "$EXTENSION" "info"
 	return 0
 }

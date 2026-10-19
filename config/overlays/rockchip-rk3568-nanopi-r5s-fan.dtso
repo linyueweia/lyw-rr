@@ -25,7 +25,7 @@
  *     cooling_device 出现 type=pwm-fan（max_state=32），CPU 38C 时风扇 ~43%
  *
  * 档位：32 档（cooling-levels 共 32 项，state 0..32），由 r5s-fan-control.sh
- *       按「<=18C 停，18C→55C 线性升到 100%」写 cur_state。
+ *       按「<=18C 停，18C→45C 线性升到 100%」写 cur_state。
  * 频率：50000 ns = 20 kHz（与官方 vendor DTS 同值）。
  * 供电：vcc5v0_sys（5V 常开；mainline DTB 里没有 vendor 的 vcc5v0_sysp）。
  */

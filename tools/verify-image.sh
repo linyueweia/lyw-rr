@@ -373,13 +373,13 @@ if [ "$PROFILE" = "adapted" ]; then
 		&& ok "角色服务排在 roceos 之前" || bad "角色服务排序不对（改了库也要重启才生效）"
 
 	echo
-	echo "=== [适配层] 风扇温控（pwm-fan overlay + 18C→55C 曲线）"
+	echo "=== [适配层] 风扇温控（pwm-fan overlay + 18C→45C 曲线）"
 	FANSH=/mnt/ir/usr/local/sbin/r5s-fan-control.sh
 	if [ -x "$FANSH" ]; then
 		ok "风扇控制脚本在位"
 		bash -n "$FANSH" 2>/dev/null && ok "风扇脚本语法通过" || bad "风扇脚本语法错误"
 		grep -q '^START_C=18$' "$FANSH" && ok "起始温度 = 18C" || bad "起始温度不是 18C"
-		grep -q '^FULL_C=55$' "$FANSH" && ok "满速温度 = 55C" || bad "满速温度不是 55C"
+		grep -q '^FULL_C=45$' "$FANSH" && ok "满速温度 = 45C" || bad "满速温度不是 45C"
 		grep -q 'pwm-fan' "$FANSH" && ok "按 type=pwm-fan 找 cooling_device" || bad "没按 pwm-fan 类型找设备"
 	else
 		bad "缺 $FANSH（风扇不调速）"
