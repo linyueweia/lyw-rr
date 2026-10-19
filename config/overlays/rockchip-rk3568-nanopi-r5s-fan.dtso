@@ -2,7 +2,7 @@
 /plugin/;
 
 /*
- * NanoPi R5S 板载 5V 风扇（ZH1.5-2A 2-pin）的 PWM 温控节点
+ * NanoPi R5S 板载 5V 风扇（ZH1.5-2A 2-pin）的 PWM 温控 —— 纯 DT / 内核 thermal 驱动
  *
  * 为什么需要这个 overlay：
  *   官方 vendor DTS（friendlyarm rk3568-nanopi5-rev01.dts）里风扇是
@@ -17,21 +17,24 @@
  *     - pwm@fdd70000（pwm0）status = "disabled"
  *   结果就是风扇既没有驱动绑定、也没有任何调速能力（要么不转，要么常转）。
  *
- * 实机取证（2026-10-17，本板首台）：
- *   - /sys/class/pwm 为空、16 个 pwm 控制器全 disabled
- *   - GPIO0_B7（pwm0m0_pins，rockchip,pins = <0x00 0x0f 0x01 ...>）在 base DTB 里
- *     没有被任何 enabled 节点引用（唯一的同名 pin group "cpu-pins" 无人使用）
- *   - 打上本 overlay 后：pwm0 被 pwm-fan 请求，duty 20588/50000 ns 正常输出，
- *     cooling_device 出现 type=pwm-fan（max_state=32），CPU 38C 时风扇 ~43%
+ * 本 overlay 做三件事，全部在 DT 层 —— 镜像里没有任何用户态风扇脚本/服务：
+ *   ① pwm0（pwm@fdd70000）打开；
+ *   ② 根节点挂 pwm-fan（33 档 cooling-levels，state 0..32）；
+ *   ③ 往 cpu-thermal 里追加 10 个 active trip + cooling-maps，把温度台阶映射到风扇档位，
+ *      由内核 thermal core（默认 step_wise）自己写 cur_state。
  *
- * 档位：32 档（cooling-levels 共 32 项，state 0..32），由 r5s-fan-control.sh
- *       按「<=18C 停，18C→45C 线性升到 100%」写 cur_state。
- * 频率：50000 ns = 20 kHz（与官方 vendor DTS 同值）。
- * 供电：vcc5v0_sys（5V 常开；mainline DTB 里没有 vendor 的 vcc5v0_sysp）。
+ * 曲线（与原先用户态脚本同口径：18C 起转、45C 满速）：
+ *   ≤19C 停；19C 起转 2 档，之后每 3C 升一档，45C 满速 32 档。
+ *   trip19 的 instance 特意写成 lower=0 / upper=2：温度掉回 18C 以下时能被拉回 0 停转。
+ *   若写成 lower=upper=2，step_wise 在没有 trip 被越过时只回到 lower，风扇会永远最低档不停。
+ *
+ * 为什么用台阶而不是用户态连续曲线：
+ *   内核 trip 点是离散的；19→45C 摊成 10 个 3C 台阶，档位跳变 ≤4/32（约 3% 占空比），
+ *   听感上就是连续加速，换来的是零用户态进程、零 systemd unit、零构建期自检脚本。
+ *   hysteresis=2C 防止在台阶边界反复跳档。
  */
 
-/*
- * 注意：必须用显式 fragment。dtc 在 /plugin/ 下遇到 `/ { fan: ... }` 这种简写时
+/* 注意：必须用显式 fragment。dtc 在 /plugin/ 下遇到 `/ { fan: ... }` 这种简写时
  * 会把节点直接挂到 overlay 根、不生成 fragment，fdtoverlay 应用后节点进不了
  * base DTB（2026-10-17 踩过：dtbo 反编译能看到 pwm-fan，merged.dtb 里却没有）。
  */
@@ -57,5 +60,108 @@
 			};
 		};
 	};
-};
 
+	/* 温控：往主线 cpu-thermal 追加 active trip + cooling-maps。
+	 * libfdt 的 overlay apply 按节点名递归合并 —— 原有的 cpu_alert0/cpu_alert1
+	 * 与 cpufreq 的 cooling-maps 都保留，只多出 fan-* 这些子节点。 */
+	fragment@2 {
+		target-path = "/thermal-zones/cpu-thermal";
+		__overlay__ {
+			trips {
+				fan_trip19: fan-trip19 {
+					temperature = <19000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip22: fan-trip22 {
+					temperature = <22000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip25: fan-trip25 {
+					temperature = <25000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip28: fan-trip28 {
+					temperature = <28000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip31: fan-trip31 {
+					temperature = <31000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip34: fan-trip34 {
+					temperature = <34000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip37: fan-trip37 {
+					temperature = <37000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip40: fan-trip40 {
+					temperature = <40000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip43: fan-trip43 {
+					temperature = <43000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+				fan_trip45: fan-trip45 {
+					temperature = <45000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+			};
+
+			cooling-maps {
+				fan_map19: fan-map19 {
+					trip = <&fan_trip19>;
+					cooling-device = <&fan 0 2>;
+				};
+				fan_map22: fan-map22 {
+					trip = <&fan_trip22>;
+					cooling-device = <&fan 5 5>;
+				};
+				fan_map25: fan-map25 {
+					trip = <&fan_trip25>;
+					cooling-device = <&fan 8 8>;
+				};
+				fan_map28: fan-map28 {
+					trip = <&fan_trip28>;
+					cooling-device = <&fan 12 12>;
+				};
+				fan_map31: fan-map31 {
+					trip = <&fan_trip31>;
+					cooling-device = <&fan 15 15>;
+				};
+				fan_map34: fan-map34 {
+					trip = <&fan_trip34>;
+					cooling-device = <&fan 19 19>;
+				};
+				fan_map37: fan-map37 {
+					trip = <&fan_trip37>;
+					cooling-device = <&fan 23 23>;
+				};
+				fan_map40: fan-map40 {
+					trip = <&fan_trip40>;
+					cooling-device = <&fan 26 26>;
+				};
+				fan_map43: fan-map43 {
+					trip = <&fan_trip43>;
+					cooling-device = <&fan 30 30>;
+				};
+				fan_map45: fan-map45 {
+					trip = <&fan_trip45>;
+					cooling-device = <&fan 32 32>;
+				};
+			};
+		};
+	};
+};

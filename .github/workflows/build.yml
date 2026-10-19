@@ -135,8 +135,10 @@ jobs:
           fi
           echo "LED overlay 修正完成（$n 个内核分支）"
 
-          # ── 风扇 overlay（pwm0 + pwm-fan；主线 DTB 没有风扇支持）──────────────
+          # ── 风扇 overlay（pwm0 + pwm-fan + cpu-thermal 的 active trips）─────────
           # 与 LED overlay 同一个内核 overlay 目录，构建时统一编译部署。
+          # 风扇完全由 DT + 内核 thermal 驱动（step_wise），镜像里没有用户态脚本/服务
+          # （2026-10-19 定案：用户态曲线脚本那套自检把自己判死过一次，改成纯 DT 更简单）。
           n=0
           for f in build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-leds.dtso; do
             d=$(dirname "$f")
@@ -144,9 +146,15 @@ jobs:
             n=$((n+1))
           done
           [ "$n" -ge 1 ] || { echo "!! 没找到内核 overlay 目录（n=$n）"; exit 1; }
-          grep -qh 'pwm-fan' build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-fan.dtso \
-            || { echo "!! fan overlay 内容不对（缺 pwm-fan）"; exit 1; }
-          echo "fan overlay 就位（$n 个内核分支）"
+          FO=build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-fan.dtso
+          for pat in 'compatible = "pwm-fan"' 'cooling-levels' 'type = "active"' 'cooling-device = <&fan' 'target-path = "/thermal-zones/cpu-thermal"'; do
+            grep -qhF "$pat" $FO || { echo "!! fan overlay 缺关键内容: $pat"; exit 1; }
+          done
+          [ "$(grep -ho 'fan-trip[0-9]\+' $FO | sort -u | wc -l)" -eq 10 ] \
+            || { echo "!! fan overlay 的 active trip 不是 10 个"; exit 1; }
+          [ "$(grep -ho 'fan-map[0-9]\+' $FO | sort -u | wc -l)" -eq 10 ] \
+            || { echo "!! fan overlay 的 cooling-map 不是 10 个"; exit 1; }
+          echo "fan overlay 就位（$n 个内核分支；10 trips + 10 maps，纯 DT 控速）"
 
       - name: Install NanoPi R5S extensions (adapted)
         if: github.event.inputs.profile != 'official'
@@ -157,9 +165,13 @@ jobs:
           chmod +x build/userpatches/extensions/*.sh
           ls -l build/userpatches/extensions/
           # 框架只加载【可执行】的扩展；权限不对会被静默跳过（"Found 0 extensions"）
-          for fn in lyw_rr_roceos lyw_rr_net_roles lyw_rr_fan; do
+          for fn in lyw_rr_roceos lyw_rr_net_roles; do
             grep -rq "$fn" build/userpatches/extensions/ || { echo "!! 扩展函数缺失: $fn"; exit 1; }
           done
+          # 反断言：风扇改由 DT/内核 thermal 控速后，不许再有用户态风扇件被装进镜像
+          if grep -rq 'r5s-fan-control\|r5s-fan.service' build/userpatches/extensions/; then
+            echo "!! 扩展里仍残留用户态风扇脚本（已改为纯 DT 控速，见 fan overlay）"; exit 1
+          fi
           grep -q 'custom_kernel_config__lyw_rr_board_symbols' \
             build/userpatches/extensions/lyw-rr-kernel-config.sh \
             || { echo "!! kernel-config 扩展缺钩子"; exit 1; }
@@ -242,7 +254,7 @@ jobs:
           cd build
           # 注释必须放在整条命令【之前】：放进 "\" 续行之间会把后续参数整段注释掉
           if [ "$PROFILE" = "adapted" ]; then
-            EXTS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan"
+            EXTS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles"
           else
             EXTS="istorenext"
           fi

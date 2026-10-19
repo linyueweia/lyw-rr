@@ -87,8 +87,8 @@ BOOTPATCHDIR="v2024.04"
 BOOTCONFIG="nanopi-r5s-rk3568_defconfig"
 
 OVERLAY_PREFIX="rockchip-rk3568"
-# nanopi-r5s-fan：打开 pwm0 + pwm-fan 节点（主线 DTB 没有风扇支持），
-# 由 lyw-rr-fan 扩展的 r5s-fan.service 按 18C→45C 写 cur_state 调速。
+# nanopi-r5s-fan：打开 pwm0 + pwm-fan 节点，并往 cpu-thermal 追加 active trips
+# （主线 DTB 没有风扇支持）。温控完全由内核 thermal 做，镜像里不含用户态风扇脚本。
 DEFAULT_OVERLAYS="nanopi-r5s-leds nanopi-r5s-fan"
 
 function post_family_config__uboot_config() {
