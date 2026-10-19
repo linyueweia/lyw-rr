@@ -67,12 +67,29 @@ IMAGE_PARTITION_TABLE="gpt"
 FULL_DESKTOP="yes"
 BOOT_LOGO="desktop"
 
+# ── 网络栈：不装 NetworkManager（对齐官方 iNextOS 设备 / 与 lyw-OS 同一条）──
+# 权威依据：官方 EasePi R1 镜像实测（lyw-OS 的 csc 里已记录）—— dpkg 里根本没有
+# network-manager。官方 iNextOS 的网络由 ifupdown-ng(networking.service) +
+# roceos(建 br-lan1 / 挂口 / 写 dnsmasq) + dnsmasq 管。
+#
+# 框架默认 BUILD_MINIMAL=no → NETWORKING_STACK=network-manager，会装并启用 NM。
+# 本板实机取证（2026-10-17 R5S 首台）：
+#   NM 启动时把 br-lan1 的 eth0/eth1 当独立设备接管，给 eth1 生成
+#   'Wired connection 2' 跑 DHCP，45s 超时（桥端口不可能拿到地址）后
+#   `released from controller device br-lan1` → 把 eth1 从网桥摘掉 → SSH 失联。
+#   log: device (eth1): ip-config -> failed (reason 'ip-config-unavailable')
+# 所以这里显式置 none（框架 main-config 的正式取值，走 "Not adding networking
+# extensions" 分支）。时间同步不受影响：ntpsec-ntpdate 由 istorenext 扩展带入。
+declare -g NETWORKING_STACK="none"
+
 BOOTBRANCH_BOARD="tag:v2024.04"
 BOOTPATCHDIR="v2024.04"
 BOOTCONFIG="nanopi-r5s-rk3568_defconfig"
 
 OVERLAY_PREFIX="rockchip-rk3568"
-DEFAULT_OVERLAYS="nanopi-r5s-leds"
+# nanopi-r5s-fan：打开 pwm0 + pwm-fan 节点（主线 DTB 没有风扇支持），
+# 由 lyw-rr-fan 扩展的 r5s-fan.service 按 18C→55C 写 cur_state 调速。
+DEFAULT_OVERLAYS="nanopi-r5s-leds nanopi-r5s-fan"
 
 function post_family_config__uboot_config() {
 	display_alert "$BOARD" "u-boot ${BOOTBRANCH_BOARD} overrides" "info"
@@ -87,10 +104,10 @@ function post_family_config__uboot_config() {
 #                               （逗号分隔；平台名走 /sys/devices/platform/，
 #                                PCI 名走 /sys/bus/pci/devices/ —— 两种都吃）；
 #   ③ /root/.default-network —— iNextOS istorenext-init-network 读它，
-#                               把 eth2 配成 192.168.100.1（网页后台入口）；
-#   ④ NetworkManager drop-in —— 首启时 NM 必须排在 iStoreNext 的 LAN 生成之后，
-#                               否则 NM 先接管网口、与 ifupdown 抢口
-#                               （K1 实机取证 gap G1，同修）。
+#                               把 eth2 配成 192.168.100.1（网页后台入口）。
+# 注意：镜像里【不装 NetworkManager】（见上面 NETWORKING_STACK="none"），所以不再
+#       需要旧版那个「NM 排在 LAN 之后启动」的 drop-in —— 没有 NM 就没有抢口的实体。
+#       首台实机（2026-10-17）已证：光靠排序挡不住「向导完成后 roceos 接管」的阶段。
 # 自证：任何一件没落进镜像就 exit 1 —— 静默丢失=装机后口名/地址错位，代价是上板一轮。
 function post_family_tweaks__nanopir5s_udev_network_interfaces() {
 	display_alert "$BOARD" "Pinning NanoPi R5S network interfaces (iNextOS: eth0=GbE/eth1=2.5G/eth2=2.5G)" "info"
@@ -106,18 +123,8 @@ function post_family_tweaks__nanopir5s_udev_network_interfaces() {
 	echo "fe2a0000.ethernet,0000:01:00.0,0001:11:00.0" > "${SDCARD}/etc/eth_order"
 	echo "DEFAULT_INTERFACE=eth2" > "${SDCARD}/root/.default-network"
 
-	mkdir -p "${SDCARD}/etc/systemd/system/NetworkManager.service.d"
-	cat <<- 'EOF' > "${SDCARD}/etc/systemd/system/NetworkManager.service.d/10-r5s-lan-order.conf"
-		# NanoPi R5S 板级：先让 iStoreNext 把 LAN（eth2 → 192.168.100.1）写进
-		# /etc/network/interfaces 并由 networking.service 应用，NM 再启动。
-		# 否则首启 NM 会先接管网口（此时 interfaces 还没生成），与 ifupdown 抢口。
-		[Unit]
-		After=istorenext-init-network.service networking.service
-	EOF
-
 	# ── 逐项自证（缺一即失败）──────────────────────────────────────────────
-	for f in etc/udev/rules.d/70-persistent-net.rules etc/eth_order root/.default-network \
-		etc/systemd/system/NetworkManager.service.d/10-r5s-lan-order.conf; do
+	for f in etc/udev/rules.d/70-persistent-net.rules etc/eth_order root/.default-network; do
 		[[ -e "${SDCARD}/${f}" ]] || exit_with_error "R5S network init file missing: ${f}"
 	done
 	grep -q 'KERNELS=="fe2a0000.ethernet", NAME:="eth0"' \
@@ -133,9 +140,10 @@ function post_family_tweaks__nanopir5s_udev_network_interfaces() {
 		|| exit_with_error "R5S: /etc/eth_order content wrong"
 	grep -q '^DEFAULT_INTERFACE=eth2$' "${SDCARD}/root/.default-network" \
 		|| exit_with_error "R5S: /root/.default-network wrong"
-	grep -q '^After=istorenext-init-network.service networking.service$' \
-		"${SDCARD}/etc/systemd/system/NetworkManager.service.d/10-r5s-lan-order.conf" \
-		|| exit_with_error "R5S: NM LAN-order drop-in wrong"
+	# 反断言：本板不装 NetworkManager，镜像里不该再有 NM 相关 drop-in 残留
+	if [ -e "${SDCARD}/etc/systemd/system/NetworkManager.service.d/10-r5s-lan-order.conf" ]; then
+		exit_with_error "R5S: 仍残留 NM 排序 drop-in（本板已不装 NetworkManager）"
+	fi
 	# 反断言：上游的 wan1/lan1/lan2 命名必须已被本仓替换（否则又回到不确定命名）
 	if grep -qE 'NAME:="(wan1|lan1|lan2)"' "${SDCARD}/etc/udev/rules.d/70-persistent-net.rules"; then
 		exit_with_error "R5S: 上游 wan1/lan1/lan2 命名残留（iNextOS 会拿不到 eth* 口名）"

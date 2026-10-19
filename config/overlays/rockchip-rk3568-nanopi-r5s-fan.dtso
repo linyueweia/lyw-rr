@@ -1,0 +1,61 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * NanoPi R5S 板载 5V 风扇（ZH1.5-2A 2-pin）的 PWM 温控节点
+ *
+ * 为什么需要这个 overlay：
+ *   官方 vendor DTS（friendlyarm rk3568-nanopi5-rev01.dts）里风扇是
+ *       fan: pwm-fan {
+ *           compatible = "pwm-fan";
+ *           cooling-levels = <0 18 102 170 255>;
+ *           pwms = <&pwm0 0 50000 0>;
+ *           fan-supply = <&vcc5v0_sysp>;
+ *       };
+ *   而本仓用的 mainline/Armbian DTB（rk3568-nanopi-r5s.dtb）里：
+ *     - 没有 fan 节点（/proc/device-tree 下搜不到 pwm-fan）
+ *     - pwm@fdd70000（pwm0）status = "disabled"
+ *   结果就是风扇既没有驱动绑定、也没有任何调速能力（要么不转，要么常转）。
+ *
+ * 实机取证（2026-10-17，本板首台）：
+ *   - /sys/class/pwm 为空、16 个 pwm 控制器全 disabled
+ *   - GPIO0_B7（pwm0m0_pins，rockchip,pins = <0x00 0x0f 0x01 ...>）在 base DTB 里
+ *     没有被任何 enabled 节点引用（唯一的同名 pin group "cpu-pins" 无人使用）
+ *   - 打上本 overlay 后：pwm0 被 pwm-fan 请求，duty 20588/50000 ns 正常输出，
+ *     cooling_device 出现 type=pwm-fan（max_state=32），CPU 38C 时风扇 ~43%
+ *
+ * 档位：32 档（cooling-levels 共 32 项，state 0..32），由 r5s-fan-control.sh
+ *       按「<=18C 停，18C→55C 线性升到 100%」写 cur_state。
+ * 频率：50000 ns = 20 kHz（与官方 vendor DTS 同值）。
+ * 供电：vcc5v0_sys（5V 常开；mainline DTB 里没有 vendor 的 vcc5v0_sysp）。
+ */
+
+/*
+ * 注意：必须用显式 fragment。dtc 在 /plugin/ 下遇到 `/ { fan: ... }` 这种简写时
+ * 会把节点直接挂到 overlay 根、不生成 fragment，fdtoverlay 应用后节点进不了
+ * base DTB（2026-10-17 踩过：dtbo 反编译能看到 pwm-fan，merged.dtb 里却没有）。
+ */
+
+/ {
+	fragment@0 {
+		target-path = "/pwm@fdd70000";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			fan: pwm-fan {
+				compatible = "pwm-fan";
+				#cooling-cells = <2>;
+				cooling-levels = <0 8 16 24 32 40 48 56 65 73 81 89 97 105 113 121
+						  130 138 146 154 162 170 178 186 194 203 211 219 227 235 243 251 255>;
+				pwms = <&pwm0 0 50000 0>;
+				fan-supply = <&vcc5v0_sys>;
+			};
+		};
+	};
+};
+

@@ -298,14 +298,15 @@ if [ "$PROFILE" = "adapted" ]; then
 	else
 		bad "缺 /root/.default-network（首启 192.168.100.1 会落到编号最大的 eth 上，不确定）"
 	fi
-	NM=/mnt/ir/etc/systemd/system/NetworkManager.service.d/10-r5s-lan-order.conf
-	if [ -f "$NM" ]; then
-		grep -q 'After=istorenext-init-network.service networking.service' "$NM" \
-			&& ok "NM 排序 drop-in 在位（避免首启与 ifupdown 抢口）" \
-			|| bad "NM 排序 drop-in 内容不对"
-	else
-		bad "缺 NM 排序 drop-in（首启 NM 可能先接管网口）"
-	fi
+	# 本板不装 NetworkManager（与官方 iNextOS / R1 一致）：NM 会把网桥端口当独立
+	# 网卡接管、生成 Wired connection 跑 DHCP，45s 超时后把 ethN 从 br-lan1 摘掉
+	# （2026-10-17 13:30 首台实机事件：eth1 被摘 → SSH 失联）。
+	_NMFOUND=0
+	for f in usr/sbin/NetworkManager usr/bin/nmcli etc/NetworkManager/NetworkManager.conf \
+		lib/systemd/system/NetworkManager.service etc/systemd/system/NetworkManager.service; do
+		[ -e "/mnt/ir/$f" ] && { bad "镜像里仍有 NetworkManager 组件: $f（会把 LAN 端口摘出网桥）"; _NMFOUND=1; }
+	done
+	[ "$_NMFOUND" = "0" ] && ok "反断言：无 NetworkManager（网络由 roceos + ifupdown 管，与官方一致）"
 
 	echo
 	echo "=== [适配层] roceos 网页后台"
@@ -370,6 +371,42 @@ if [ "$PROFILE" = "adapted" ]; then
 		&& ok "角色服务已 enable（${SL#/mnt/ir}）" || bad "角色服务未 enable"
 	grep -q '^Before=roceos.service' /mnt/ir/etc/systemd/system/lyw-rr-net-roles.service 2>/dev/null \
 		&& ok "角色服务排在 roceos 之前" || bad "角色服务排序不对（改了库也要重启才生效）"
+
+	echo
+	echo "=== [适配层] 风扇温控（pwm-fan overlay + 18C→55C 曲线）"
+	FANSH=/mnt/ir/usr/local/sbin/r5s-fan-control.sh
+	if [ -x "$FANSH" ]; then
+		ok "风扇控制脚本在位"
+		bash -n "$FANSH" 2>/dev/null && ok "风扇脚本语法通过" || bad "风扇脚本语法错误"
+		grep -q '^START_C=18$' "$FANSH" && ok "起始温度 = 18C" || bad "起始温度不是 18C"
+		grep -q '^FULL_C=55$' "$FANSH" && ok "满速温度 = 55C" || bad "满速温度不是 55C"
+		grep -q 'pwm-fan' "$FANSH" && ok "按 type=pwm-fan 找 cooling_device" || bad "没按 pwm-fan 类型找设备"
+	else
+		bad "缺 $FANSH（风扇不调速）"
+	fi
+	[ -f /mnt/ir/etc/systemd/system/r5s-fan.service ] && ok "风扇 unit 在位" || bad "缺 r5s-fan.service"
+	SL=$(wants_link r5s-fan.service); [ -n "$SL" ] \
+		&& ok "风扇服务已 enable（${SL#/mnt/ir}）" || bad "风扇服务未 enable（开机不转）"
+	# overlay 是否真的装进 boot 并进了 armbianEnv 的 overlays 列表
+	FDTBO=""
+	for c in "$BOOTDIR/dtb/rockchip/overlay/rockchip-rk3568-nanopi-r5s-fan.dtbo" \
+		/mnt/ir/boot/dtb/rockchip/overlay/rockchip-rk3568-nanopi-r5s-fan.dtbo; do
+		[ -f "$c" ] && FDTBO="$c" && break
+	done
+	if [ -n "$FDTBO" ]; then
+		ok "风扇 overlay 在位: $FDTBO ($(stat -c%s "$FDTBO") B)"
+		dtc -I dtb -O dts "$FDTBO" -o /tmp/r5s-fan.dtso.dts 2>/dev/null \
+			|| sudo dtc -I dtb -O dts "$FDTBO" -o /tmp/r5s-fan.dtso.dts
+		grep -q 'pwm-fan' /tmp/r5s-fan.dtso.dts \
+			&& ok "overlay 含 pwm-fan 节点" || bad "overlay 里没有 pwm-fan 节点"
+		grep -q 'pwm@fdd70000' /tmp/r5s-fan.dtso.dts \
+			&& ok "overlay 目标为 pwm@fdd70000（pwm0）" || bad "overlay 没指向 pwm0"
+	else
+		bad "镜像里找不到 rockchip-rk3568-nanopi-r5s-fan.dtbo"
+	fi
+	grep -q 'nanopi-r5s-fan' "$BOOTDIR/armbianEnv.txt" 2>/dev/null \
+		&& ok "armbianEnv overlays 含 nanopi-r5s-fan" \
+		|| bad "armbianEnv.txt 的 overlays 没启用 nanopi-r5s-fan（风扇不会绑定）"
 
 	echo
 	echo "=== [适配层] 反断言：不该有的东西"

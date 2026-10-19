@@ -108,8 +108,10 @@ jobs:
             || { echo "!! csc 的默认口不是 eth2"; exit 1; }
           grep -qF 'fe2a0000.ethernet,0000:01:00.0,0001:11:00.0' build/config/boards/nanopi-r5s.csc \
             || { echo "!! csc 的 /etc/eth_order 内容不是 eth0/eth1/eth2 三口的顺序"; exit 1; }
-          grep -qF 'After=istorenext-init-network.service networking.service' build/config/boards/nanopi-r5s.csc \
-            || { echo "!! csc 缺 NetworkManager 排序 drop-in"; exit 1; }
+          grep -qF 'declare -g NETWORKING_STACK="none"' build/config/boards/nanopi-r5s.csc \
+            || { echo "!! csc 没关掉 NetworkManager（缺 NETWORKING_STACK=\"none\"）"; exit 1; }
+          grep -qF 'DEFAULT_OVERLAYS="nanopi-r5s-leds nanopi-r5s-fan"' build/config/boards/nanopi-r5s.csc \
+            || { echo "!! csc 的 DEFAULT_OVERLAYS 没带 nanopi-r5s-fan"; exit 1; }
           if grep -qE 'NAME:="(wan1|lan1|lan2)"' build/config/boards/nanopi-r5s.csc; then
             echo "!! csc 里仍残留上游 wan1/lan1/lan2 命名"; exit 1
           fi
@@ -133,6 +135,19 @@ jobs:
           fi
           echo "LED overlay 修正完成（$n 个内核分支）"
 
+          # ── 风扇 overlay（pwm0 + pwm-fan；主线 DTB 没有风扇支持）──────────────
+          # 与 LED overlay 同一个内核 overlay 目录，构建时统一编译部署。
+          n=0
+          for f in build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-leds.dtso; do
+            d=$(dirname "$f")
+            cp -v rr/config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso "$d/"
+            n=$((n+1))
+          done
+          [ "$n" -ge 1 ] || { echo "!! 没找到内核 overlay 目录（n=$n）"; exit 1; }
+          grep -qh 'pwm-fan' build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-fan.dtso \
+            || { echo "!! fan overlay 内容不对（缺 pwm-fan）"; exit 1; }
+          echo "fan overlay 就位（$n 个内核分支）"
+
       - name: Install NanoPi R5S extensions (adapted)
         if: github.event.inputs.profile != 'official'
         run: |
@@ -142,7 +157,7 @@ jobs:
           chmod +x build/userpatches/extensions/*.sh
           ls -l build/userpatches/extensions/
           # 框架只加载【可执行】的扩展；权限不对会被静默跳过（"Found 0 extensions"）
-          for fn in lyw_rr_roceos lyw_rr_net_roles; do
+          for fn in lyw_rr_roceos lyw_rr_net_roles lyw_rr_fan; do
             grep -rq "$fn" build/userpatches/extensions/ || { echo "!! 扩展函数缺失: $fn"; exit 1; }
           done
           grep -q 'custom_kernel_config__lyw_rr_board_symbols' \
@@ -227,7 +242,7 @@ jobs:
           cd build
           # 注释必须放在整条命令【之前】：放进 "\" 续行之间会把后续参数整段注释掉
           if [ "$PROFILE" = "adapted" ]; then
-            EXTS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles"
+            EXTS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan"
           else
             EXTS="istorenext"
           fi

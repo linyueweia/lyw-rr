@@ -43,9 +43,11 @@
 | `istorenext` 扩展（整套 iNextOS 包、12G rootfs、4G swap、网络链两件套）| **官方**，照用 | `ENABLE_EXTENSIONS` 里第一项 |
 | 内核配置（`STMMAC_ETH=m`、`R8169=m`、`BLK_DEV_NVME=y`、`LEDS_GPIO=y`…）| **官方值**，本仓只断言 | `lyw-rr-kernel-config.sh` 不改值：上游一旦改掉这些，构建立刻失败而不是上板才发现 |
 | roceos 网页后台（`/opt/roceos` + 3 个服务 + nginx 站点/证书）| 官方镜像**有**、框架**没有** → 本仓注入 | `lyw-rr-roceos.sh`；载荷取自 lyw-OS release，sha256 钉死 |
-| 网口命名钉定（udev 三规则 + `/etc/eth_order` + `.default-network` + NM 排序 drop-in）| **本仓适配**（替换上游 wan1/lan1/lan2）| 上游命名与 iNextOS 的 `eth*` 网络链不兼容：口名/后台地址会随内核探测顺序漂移 |
+| 网口命名钉定（udev 三规则 + `/etc/eth_order` + `.default-network`）| **本仓适配**（替换上游 wan1/lan1/lan2）| 上游命名与 iNextOS 的 `eth*` 网络链不兼容：口名/后台地址会随内核探测顺序漂移 |
 | EEE/LPI | **不关闭**（官方默认开启）| 2026-10-13 曾按"同族三线"判为 EEE 唤醒时序问题并做了五层关闭；2026-10-17 在 T68M 主路由按日志复核推翻（EEE 本是关闭态而掉线仍发生，141 次掉线均伴随对端重启）→ 本仓改为与官方一致：镜像里不得有 EEE 关闭件，CI 反向断言 |
 | roceos 角色归一（`roceos.db` 三张表）| **本仓适配** | 默认 `ROLE_MAP="wan1=eth0 lan1=eth1,eth2"`（1G 当 WAN，两个 2.5G 同属 LAN 桥）；**只在首启套用一次**，之后网页后台改的角色不会被覆盖；脚本只修名字漂移 + 把孤儿口并入 LAN 桥 |
+| 网络栈（`NETWORKING_STACK="none"`）| **官方值**（对齐官方 iNextOS / EasePi R1）| 官方 R1 实测 dpkg 里没有 network-manager；装了 NM 会把 LAN 桥端口当独立网卡跑 DHCP，45s 超时后把 ethN 摘出 br-lan1（本板 2026-10-17 实机：eth1 被摘 → SSH 失联）|
+| 风扇温控（pwm-fan overlay + 18C→55C 曲线）| **本仓适配**（主线 DTB 没有风扇支持）| `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso` 打开 pwm0 + 挂 pwm-fan；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，5s 采样、32 档，≤18C 停、55C 满速 |
 
 ## 两档构建 profile
 
@@ -102,7 +104,13 @@ lspci -nn | grep -i ethernet                   # 期望两块 10ec:8125
 curl -sI http://192.168.100.1/ | head -1       # 期望 200/301（nginx → roceos）
 systemctl is-active roceos roceos-ai nginx     # 期望 active
 
-# 6) 网卡 MAC 稳定性（上游遗留项，见下）
+# 6) 风扇温控（pwm-fan overlay + 用户态曲线）
+ls /sys/class/thermal/cooling_device*/type | xargs grep -l pwm-fan   # 期望命中 type=pwm-fan
+cat /sys/class/thermal/cooling_device*/cur_state                     # 随温度变化的档位
+systemctl is-active r5s-fan                                          # 期望 active
+cat /sys/kernel/debug/pwm                                            # 期望 pwm-0 (pwm-fan) requested/enabled
+
+# 7) 网卡 MAC 稳定性（上游遗留项，见下）
 ip link show eth0 | grep ether                 # 重启两次比对，若变化见"遗留"
 ```
 
@@ -132,6 +140,8 @@ extensions/lyw-rr-roceos.sh      # 注入 roceos 网页后台（官方镜像有�
 extensions/lyw-rr-kernel-config.sh  # 断言三口/NVMe/LED 的内核符号（不改值）
 （EEE 关闭扩展已移除：EEE 按官方默认保持开启）
 extensions/lyw-rr-net-roles.sh   # roceos 角色表归一（映射在 /etc/lyw-rr-net-roles.conf）
+extensions/lyw-rr-fan.sh         # 板载风扇温控（pwm-fan，18C 起转 / 55C 满速）
+config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso  # 打开 pwm0 + 挂 pwm-fan 节点
 tools/verify-image.sh            # 镜像自证（判据即代码；adapted/official 两档）
 tools/role-map-check.py          # ROLE_MAP 口径判据（构建早期对仓库默认值 + 构建后对镜像里那份，同一份代码）
 tools/tests/                     # 判据脚本自测（布局探测辅助函数 / role-map 负例），构建前必跑
