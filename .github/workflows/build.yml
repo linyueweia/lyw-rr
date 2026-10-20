@@ -151,11 +151,12 @@ jobs:
 
           # ── 登记进 overlay 的 Makefile（不登记＝不编译，run #21 真因）────────────
           # 框架的 arch/arm64/boot/dts/rockchip/overlay/Makefile 是【显式枚举】每个 dtbo 的
-          # （dtbo-$(CONFIG_ARCH_ROCKCHIP) += … / dtb-y += $(dtbo-y)）。armbian 的
-          # "Bare OVERLAY auto-patch" 只把文件原样拷进内核树、不会为新 dtso 补登记：
-          # leds 因为上游那行在，编了；fan 不在 → 镜像里没有 …-nanopi-r5s-fan.dtbo，
-          # 4.7GiB 镜像编完、产物上传完，倒在自证最后一行，风扇也没有 cooling device。
-          # 判据单点在本脚本（幂等；缺登记/结构异常一律 rc=1）。
+          # （dtbo-$(CONFIG_ARCH_ROCKCHIP) += …，再聚合：6.9+ 用 dtb-y += $(dtbo-y)，
+          #   6.6 老分支用 targets += $(dtbo-y)）。armbian 的 "Bare OVERLAY auto-patch"
+          # 只把文件原样拷进内核树、不会为新 dtso 补登记：leds 因为上游那行在，编了；
+          # fan 不在 → 镜像里没有 …-nanopi-r5s-fan.dtbo，4.7GiB 镜像编完、产物上传完，
+          # 倒在自证最后一行，风扇也没有 cooling device。
+          # 判据单点在本脚本（幂等；缺登记/无聚合行/重复登记/缺 Makefile 一律 rc=1）。
           python3 rr/tools/overlay-makefile-patch.py build/patch/kernel/archive
 
       - name: Install NanoPi R5S extensions (adapted)

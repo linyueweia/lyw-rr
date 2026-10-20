@@ -21,7 +21,8 @@
 #   1. 找到 <archive>/rockchip64-*/overlay/ 里与本仓同名、真实存在的 .dtso；
 #   2. 断言该目录有 Makefile（没有就是结构变了，直接失败，别静默跳过）；
 #   3. 确保同名 .dtbo 在 dtbo-$(CONFIG_…) 列表里【恰好一次】（缺则插入，幂等）；
-#   4. 断言 Makefile 里有 `dtb-y … $(dtbo-y)`（否则登记了也不会编译）；
+#   4. 断言 Makefile 里有聚合 $(dtbo-y) 的行（6.9+ 是 `dtb-y += $(dtbo-y) …`，
+#      6.6 是 `targets += $(dtbo-y) …`；没有这类行的话登记了也不会编译）；
 #   5. 打印每个分支的处理结果，异常一律 rc=1。
 #
 # 用法：
@@ -39,8 +40,10 @@ import re
 import sys
 
 VAR_RE = re.compile(r"^[ \t]*dtbo-\$\(([A-Za-z0-9_]+)\)[ \t]*\+=", re.MULTILINE)
-DTB_Y_RE = re.compile(r"^[ \t]*dtb-y[ \t]*\+?=.*\$\(dtbo-y\)", re.MULTILINE)
-DTB_Y_ANY_RE = re.compile(r"^[ \t]*dtb-y[ \t]*\+?=", re.MULTILINE)
+# overlay 目录的 Makefile 有两种官方形态，登记行都必须落在「聚合行」之前：
+#   6.9+ : dtb-y  += $(dtbo-y) $(scr-y) $(dtbotxt-y)
+#   6.6  : targets += $(dtbo-y) $(scr-y) $(dtbotxt-y)（同一文件里还有 always := …）
+AGG_RE = re.compile(r"^[ \t]*(?:dtb-y|targets|always)[ \t]*\+?=.*\$\(dtbo-y\)", re.MULTILINE)
 
 
 def entry_count(text: str, name: str) -> int:
@@ -70,9 +73,9 @@ def process(overlay_dir: str, dtso_names, check_only: bool):
         text = f.read()
     eol = "\r\n" if "\r\n" in text else "\n"
 
-    if not DTB_Y_RE.search(text):
-        # 没有 dtb-y 聚合行，登记了也不编译 —— 必须失败，不能假绿
-        return changed, [f"{makefile}: 缺 `dtb-y … $(dtbo-y)` 聚合行（dtbo 不会进 dtb-y）"]
+    if not AGG_RE.search(text):
+        # 没有任何「聚合 $(dtbo-y)」的行，登记了也不会编译 —— 必须失败，不能假绿
+        return changed, [f"{makefile}: 没有聚合 $(dtbo-y) 的行（dtb-y/targets/always 都没有），登记也不会编译"]
 
     var_of = VAR_RE.findall(text)
     if not var_of:
@@ -91,12 +94,12 @@ def process(overlay_dir: str, dtso_names, check_only: bool):
         if check_only:
             errors.append(f"{makefile}: 未登记 {base}.dtbo（只拷 dtso 不会编译）")
             continue
-        # 插在 dtb-y 聚合行【之前】（之后写就没意义了）
+        # 插在聚合行（dtb-y / targets / always）【之前】（之后写就没意义了）
         line = f"dtbo-$({var}) += {base}.dtbo"
         lines = text.splitlines(keepends=True)
         out, done = [], False
         for ln in lines:
-            if not done and DTB_Y_ANY_RE.match(ln):
+            if not done and AGG_RE.match(ln):
                 out.append(line + eol)
                 done = True
             out.append(ln)

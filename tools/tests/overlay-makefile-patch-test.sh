@@ -72,6 +72,20 @@ make_makefile() { # $1=目标路径  $2=额外条目（可为空）  $3=1 则省
 	} >"$1"
 }
 
+# 旧分支（6.6）形态：聚合行是 targets/always 而不是 dtb-y
+make_makefile_66() { # $1=目标路径
+	mkdir -p "$(dirname "$1")"
+	{
+		echo '# SPDX-License-Identifier: GPL-2.0'
+		echo 'dtbo-$(CONFIG_ARCH_ROCKCHIP) += \'
+		echo '	rockchip-rk3568-nanopi-r5s-leds.dtbo \'
+		echo '	rockchip-rk3328-spi-spidev.dtbo'
+		echo
+		echo 'targets += $(dtbo-y) $(scr-y) $(dtbotxt-y)'
+		echo 'always         := $(dtbo-y) $(scr-y) $(dtbotxt-y)'
+	} >"$1"
+}
+
 echo "== ① 缺登记：--check 必须红，写入后必须恰好登记一次且排在 dtb-y 之前"
 A="$WORK/ok/patch/kernel/archive"
 make_makefile "$A/rockchip64-6.18/overlay/Makefile" "" 0
@@ -97,11 +111,22 @@ run_expect 0 "二次写入 rc=0" "$A"
 CNT=$(grep -c 'nanopi-r5s-fan\.dtbo' "$MK" || true)
 [ "${CNT:-0}" = "1" ] && ok "仍然只有 1 处（幂等）" || bad "二次写入后出现 ${CNT} 处"
 
-echo "== ③ 缺 dtb-y 聚合行 → 必须红（登记了也不会编译）"
+echo "== ③ 缺聚合行（既没有 dtb-y 也没有 targets/always）→ 必须红（登记了也不会编译）"
 B="$WORK/nodtby/patch/kernel/archive"
 make_makefile "$B/rockchip64-6.18/overlay/Makefile" "" 1
 cp "$SRC"/*.dtso "$B/rockchip64-6.18/overlay/"
-run_expect 1 "缺 dtb-y … \$(dtbo-y) 时判红" "$B"
+run_expect 1 "没有任何聚合 \$(dtbo-y) 的行时判红" "$B"
+
+echo "== ③-b 老分支形态（targets += \$(dtbo-y)，内核 6.6）→ 必须能登记且绿"
+F="$WORK/old66/patch/kernel/archive"
+make_makefile_66 "$F/rockchip64-6.6/overlay/Makefile"
+cp "$SRC"/*.dtso "$F/rockchip64-6.6/overlay/"
+run_expect 0 "6.6 形态（targets 聚合）登记成功" "$F"
+MK66="$F/rockchip64-6.6/overlay/Makefile"
+CNT=$(grep -c '^dtbo-\$(CONFIG_ARCH_ROCKCHIP) += rockchip-rk3568-nanopi-r5s-fan.dtbo$' "$MK66" || true)
+[ "${CNT:-0}" = "1" ] && ok "6.6 形态 fan.dtbo 登记 1 处" || bad "6.6 形态 fan.dtbo 登记次数=${CNT:-0}"
+awk '/nanopi-r5s-fan\.dtbo/{f=NR} /^targets \+=/{d=NR} END{exit !(f && d && f < d)}' "$MK66" \
+	&& ok "6.6 形态登记行在 targets 聚合行之前" || bad "6.6 形态登记行位置不对"
 
 echo "== ④ 重复登记 → 必须红"
 C="$WORK/dup/patch/kernel/archive"
