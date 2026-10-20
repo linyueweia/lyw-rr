@@ -47,7 +47,7 @@
 | EEE/LPI | **不关闭**（官方默认开启）| 2026-10-13 曾按"同族三线"判为 EEE 唤醒时序问题并做了五层关闭；2026-10-17 在 T68M 主路由按日志复核推翻（EEE 本是关闭态而掉线仍发生，141 次掉线均伴随对端重启）→ 本仓改为与官方一致：镜像里不得有 EEE 关闭件，CI 反向断言 |
 | roceos 角色归一（`roceos.db` 三张表）| **本仓适配** | 默认 `ROLE_MAP="wan1=eth0 lan1=eth1,eth2"`（1G 当 WAN，两个 2.5G 同属 LAN 桥）；**只在首启套用一次**，之后网页后台改的角色不会被覆盖；脚本只修名字漂移 + 把孤儿口并入 LAN 桥 |
 | 网络栈（`NETWORKING_STACK="none"`）| **官方值**（对齐官方 iNextOS / EasePi R1）| 官方 R1 实测 dpkg 里没有 network-manager；装了 NM 会把 LAN 桥端口当独立网卡跑 DHCP，45s 超时后把 ethN 摘出 br-lan1（本板 2026-10-17 实机：eth1 被摘 → SSH 失联）|
-| 风扇温控（pwm-fan overlay + 18C→45C 曲线）| **本仓适配**（主线 DTB 没有风扇支持）| `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso` 打开 pwm0 + 挂 pwm-fan；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，5s 采样、32 档，≤18C 停、45C 满速 |
+| 风扇温控（pwm-fan overlay + 18C→45C 曲线）| **本仓适配**（主线 DTB 没有风扇支持）| `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso` 打开 pwm0 + 挂 pwm-fan；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，5s 采样、32 档，≤18C 停、45C 满速。**注意：overlay 必须同时登记进框架 overlay 的 Makefile**（`tools/overlay-makefile-patch.py`）—— 框架是显式枚举 dtbo 的，只拷 .dtso 不会编译，风扇就没有 cooling device |
 
 ## 两档构建 profile
 
@@ -144,7 +144,8 @@ extensions/lyw-rr-fan.sh         # 板载风扇温控（pwm-fan，18C 起转 / 4
 config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso  # 打开 pwm0 + 挂 pwm-fan 节点
 tools/verify-image.sh            # 镜像自证（判据即代码；adapted/official 两档）
 tools/role-map-check.py          # ROLE_MAP 口径判据（构建早期对仓库默认值 + 构建后对镜像里那份，同一份代码）
-tools/tests/                     # 判据脚本自测（布局探测辅助函数 / role-map 负例），构建前必跑
+tools/overlay-makefile-patch.py  # 把 config/overlays/*.dtso 登记进框架 overlay 的 Makefile（只拷 .dtso 不登记＝不编译）
+tools/tests/                     # 判据脚本自测（布局探测 / role-map / 风扇自检 / overlay 登记），构建前必跑
 .github/workflows/build.yml      # 上游指纹跟踪 + 双 profile 构建 + 自证 + 产物
 docs/R5S-适配工作流与判据.md      # 现象→根因→修复→验收 表 + 上板流程
 ```

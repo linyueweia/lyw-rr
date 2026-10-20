@@ -137,9 +137,10 @@ jobs:
 
           # ── 风扇 overlay（pwm0 + pwm-fan；主线 DTB 没有风扇支持）──────────────
           # 与 LED overlay 同一个内核 overlay 目录，构建时统一编译部署。
+          # 按【目录】遍历（不借 leds 文件当路标）：风扇 overlay 的存在与 leds 无关。
           n=0
-          for f in build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-leds.dtso; do
-            d=$(dirname "$f")
+          for d in build/patch/kernel/archive/rockchip64-*/overlay; do
+            [ -d "$d" ] || continue
             cp -v rr/config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso "$d/"
             n=$((n+1))
           done
@@ -147,6 +148,15 @@ jobs:
           grep -qh 'pwm-fan' build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-fan.dtso \
             || { echo "!! fan overlay 内容不对（缺 pwm-fan）"; exit 1; }
           echo "fan overlay 就位（$n 个内核分支）"
+
+          # ── 登记进 overlay 的 Makefile（不登记＝不编译，run #21 真因）────────────
+          # 框架的 arch/arm64/boot/dts/rockchip/overlay/Makefile 是【显式枚举】每个 dtbo 的
+          # （dtbo-$(CONFIG_ARCH_ROCKCHIP) += … / dtb-y += $(dtbo-y)）。armbian 的
+          # "Bare OVERLAY auto-patch" 只把文件原样拷进内核树、不会为新 dtso 补登记：
+          # leds 因为上游那行在，编了；fan 不在 → 镜像里没有 …-nanopi-r5s-fan.dtbo，
+          # 4.7GiB 镜像编完、产物上传完，倒在自证最后一行，风扇也没有 cooling device。
+          # 判据单点在本脚本（幂等；缺登记/结构异常一律 rc=1）。
+          python3 rr/tools/overlay-makefile-patch.py build/patch/kernel/archive
 
       - name: Install NanoPi R5S extensions (adapted)
         if: github.event.inputs.profile != 'official'
@@ -175,6 +185,17 @@ jobs:
         run: |
           set -e
           bash rr/tools/tests/fan-hook-test.sh
+
+      # ── overlay Makefile 登记判据的负例自测（秒级）────────────────────────────
+      # run #21（2026-10-19）：fan.dtso 拷进了 overlay 目录，但框架的 overlay Makefile
+      # 是显式枚举每个 dtbo 的 → 没登记就不编译 → 镜像里没有 fan.dtbo。
+      # 这里跑 tools/overlay-makefile-patch.py 的六类负例，确保判据真的会拦：
+      # 缺登记 / 缺 dtb-y 聚合行 / 重复登记 / 缺 Makefile / 一个分支都没拷到 dtso / 幂等。
+      - name: Self-test overlay Makefile registration (adapted)
+        if: github.event.inputs.profile != 'official'
+        run: |
+          set -e
+          bash rr/tools/tests/overlay-makefile-patch-test.sh
 
       # ── 角色映射判据（秒级；把「最后一分钟才红」的那类事故提前到构建前）──────────
       # 2026-10-17 run #14：默认 ROLE_MAP 改了，镜像自证里还留着旧口径的字面量 →

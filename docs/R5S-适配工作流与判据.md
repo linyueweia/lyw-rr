@@ -25,7 +25,7 @@ iNextOS 的用户态只认 `eth*` + `/etc/eth_order`，两者默认组合会让�
 | 5 | 2.5G 口"灯亮但拿不到 IP"、整口间歇 Link Down（用网高峰 34 次/3h） | 2026-10-13 曾判为 EEE/LPI 唤醒时序；**2026-10-17 在 T68M 主路由按日志复核推翻**：EEE 本来就是关闭态而掉线仍发生，141 次掉线每次都伴随对端 1–5 s 内重新 DHCP（对端在重启） | **不再关 EEE**：按 iNextOS 官方默认为开启，镜像里不得有 EEE 关闭件（CI 反向断言）；网卡配置只走 DT/官方基线 | 构建期反向断言（无 eee-off 件）；上板看 `ethtool --show-eee` 为官方默认即可 |
 | 6 | 更新流程装固件包时把 `armbian-firmware` 连带卸载 → 网卡固件被删、装不回来 | roceos 的"安装依赖"会装发行版固件包，而 `armbian-firmware` 的 control 里 `Provides`+`Conflicts` 了其中一部分 | apt `Pin-Priority: -1` 禁止清单 + 9 个同名空壳包（不留文件）| 构建期断言 pin 文件 |
 | 7 | 上游某天把网口/NVMe/LED 的内核符号改成内建或关掉，只有上板才发现 | 这些符号在上游 config 里是**默认值**而非显式声明 | `lyw-rr-kernel-config.sh` **不改值**，只逐符号断言 + Kconfig 入口自检 | 构建期（构建失败早于镜像产出）+ `verify-image.sh` 断言镜像内 config |
-| 8 | 风扇不转 / 不调速（温度再高也不变） | 主线 `rk3568-nanopi-r5s.dtb` 没有 fan 节点，pwm0（fdd70000）是 `disabled`，16 个 pwm 控制器全关 → pwm-fan 无从绑定 | `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso`：`&pwm0 { status = "okay" }` + `fan: pwm-fan`（`pwms = <&pwm0 0 50000 0>`、`fan-supply = <&vcc5v0_sys>`、32 档 cooling-levels）；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，按 18C→45C 线性写 `cooling_device/cur_state` | 构建期断言 overlay 进 boot + armbianEnv overlays + 脚本/unit/enable；上板 `cat /sys/class/thermal/cooling_device*/type` 有 `pwm-fan`、`/sys/kernel/debug/pwm` 里 pwm-0 为 pwm-fan requested/enabled |
+| 8 | 风扇不转 / 不调速（温度再高也不变） | 主线 `rk3568-nanopi-r5s.dtb` 没有 fan 节点，pwm0（fdd70000）是 `disabled`，16 个 pwm 控制器全关 → pwm-fan 无从绑定 | `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso`：`&pwm0 { status = "okay" }` + `fan: pwm-fan`（`pwms = <&pwm0 0 50000 0>`、`fan-supply = <&vcc5v0_sys>`、32 档 cooling-levels）；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，按 18C→45C 线性写 `cooling_device/cur_state` | 构建期断言 overlay 进 boot + armbianEnv overlays + 脚本/unit/enable；**overlay 的 Makefile 必须登记该 dtbo**（框架的 `arch/…/rockchip/overlay/Makefile` 是显式枚举，armbian 的 bare auto-patch 只拷文件不登记 → 只拷 .dtso 不会编译，run #21 真因；判据单点 `tools/overlay-makefile-patch.py`）；上板 `cat /sys/class/thermal/cooling_device*/type` 有 `pwm-fan`、`/sys/kernel/debug/pwm` 里 pwm-0 为 pwm-fan requested/enabled |
 
 ---
 
@@ -50,9 +50,18 @@ curl -fL -o build/userpatches/overlay/roceos-payload.tar.gz \
   https://github.com/linyueweia/lyw-OS/releases/download/roceos-payload-v1/roceos-payload.tar.gz
 echo "6b819584a1b1701163f8983bd59a31821643f64dd65c76ba8f500ef54c5e8bb5  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
 
+# overlay（LED 修正版 + 风扇）：拷进各内核分支的 overlay 目录，并且【必须登记进 Makefile】
+# —— 框架的 overlay Makefile 是显式枚举每个 dtbo 的，只拷 .dtso 不会编译（run #21 真因）
+for f in build/patch/kernel/archive/rockchip64-*/overlay/rockchip-rk3568-nanopi-r5s-leds.dtso; do
+  [ -f "$f" ] || continue
+  cp -v rr/config/overlays/rockchip-rk3568-nanopi-r5s-leds.dtso "$f"
+  cp -v rr/config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso  "$(dirname "$f")/"
+done
+python3 rr/tools/overlay-makefile-patch.py build/patch/kernel/archive
+
 cd build && ./compile.sh build \
   BOARD=nanopi-r5s BRANCH=current RELEASE=trixie \
-  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles" \
+  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan" \
   BUILD_MINIMAL=no BUILD_DESKTOP=no KERNEL_CONFIGURE=no \
   COMPRESS_OUTPUTIMAGE="sha,img,xz" SHARE_LOG=yes EXPERT=yes
 ```
