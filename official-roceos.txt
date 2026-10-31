@@ -1,4 +1,4 @@
-# 本仓镜像内置的 roceos（iNextOS 网页后台）版本 —— CI 的 check-roceos.yml 每天核对
+# 本仓镜像内置的 roceos（iNextOS 网页后台）版本 —— CI 的 build.yml 里 roceos job 每天核对并自动跟版
 #
 # 为什么不跟 frameworks 的 last-upstream-sha：roceos 不在 armbian-easepi 仓库里，
 # 它有自己的在线升级通道（官方更新服务器），固件镜像里的版本必然落后于线上最新版。

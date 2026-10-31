@@ -325,7 +325,7 @@ def main(argv=None):
         "synced_from": pkg_url,
     })
     header = [
-        "# 本仓镜像内置的 roceos（iNextOS 网页后台）版本 —— 由 .github/workflows/sync-roceos.yml 自动维护。",
+        "# 本仓镜像内置的 roceos（iNextOS 网页后台）版本 —— 由 .github/workflows/build.yml 的 roceos job 自动维护。",
         "# 查版本：GET " + BASE + "/api/v1/updates/check?version=<当前>&channel=stable_arm&arch=arm64",
         "# 取包：  GET " + BASE + "/api/v1/updates/packages/<filename>（sha256 由接口给，脚本会校验）",
         "# 重建：  python3 tools/roceos-sync.py --repo <本仓>（四仓各一份，只用 GITHUB_TOKEN）",

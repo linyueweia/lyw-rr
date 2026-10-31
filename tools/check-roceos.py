@@ -80,8 +80,9 @@ def main(argv=None):
         cl = (lat.get("changelog") or "").strip()
         if cl:
             out.append("\n<details><summary>changelog</summary>\n\n```\n%s\n```\n</details>" % cl[:3000])
-        out.append("\n**下一步**：按 docs 里「roceos 载荷怎么跟官方版本」重建载荷 → 更新 "
-                   "`official-roceos.txt` 与两处 `ROCEOS_PAYLOAD_SHA256`（扩展 + workflow 的 curl 校验）→ push 触发整机重建。")
+        out.append("\n**下一步**：不用手工做 —— `.github/workflows/build.yml` 的 `roceos` job 会在同一次运行里 "
+                   "自动重建载荷、发本仓 release、改三处 pin 并推送（tools/roceos-sync.py）；"
+                   "本脚本 rc=1 只表示「镜像内置版本落后于官方在线通道」。")
         rc = 1
     text = "\n".join(out) + "\n"
     print(text)

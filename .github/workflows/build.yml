@@ -1,50 +1,88 @@
-name: Build iNextOS for NanoPi R5S
+# ─────────────────────────────────────────────────────────────────────────────
+# 本仓只有【一个】GitHub Actions 工作流（2026-10-31 合并定案，四仓同构）
+#
+# 合并前是 3~4 个文件、各自一套 cron，同一天各跑一遍、彼此看不见对方结果：
+#   build.yml         上游跟踪 + 整机构建（每日 03:00 CST）
+#   check-roceos.yml  roceos 版本核对（每日 03:30 CST，落后即红）
+#   sync-roceos.yml   roceos 载荷重建 + 发 release + 改 pin + 派发构建（每日 04:00 CST）
+#   dtb-verify.yml    只编板级 DTB 的快速门（仅 lyw-OS 当时有）
+#
+# 现在：一个 workflow、一条 cron、一条 job 链（needs 串起来，结果互相可见）：
+#   upstream → roceos → dtb → build
+#   ① upstream：比对 jjm2473/armbian-easepi @ easepi-v26.02 的 HEAD 与 last-upstream-sha，
+#               变了就记录新指纹（GITHUB_TOKEN 推的提交不会触发新 run，不会递归）
+#   ② roceos  ：查官方 stable_arm/arm64 最新版 → 有新版本就重建本仓载荷、发本仓 release、
+#               改三处 pin 并推送。下游 build checkout 到**刚推的提交**，所以旧
+#               sync-roceos.yml 里那句 `gh workflow run build.yml` 不再需要（同 run 内接上）。
+#   ③ dtb     ：只编板级 DTS 的 4 分钟快验。红了不开 90 分钟的整机；
+#               判据与镜像自证同一口径（OS 是 52 条 board-parity，其余仓是 dts-lint + DTB 字节断言）
+#   ④ build   ：整机构建 + 产物上传 + 镜像自证
+#
+# 定时触发只有这一条链：上游无变化且 roceos 无新版 ⇒ 前三步几分钟跑完就结束，不白烧 90 分钟。
+# 手动触发用 inputs.task 只做其中一段（等价于合并前那几个独立 workflow 的手动触发）。
+# 判据/口径的唯一来源仍是 tools/ 下的脚本 —— 本文件只编排，不重复一份字面量。
+# ─────────────────────────────────────────────────────────────────────────────
+name: Build iNextOS for NanoPi R5S（单一工作流：上游跟踪 / roceos 跟版 / DTB 快验 / 构建）
 
-# 两档 profile（手动触发时选择）：
-#   adapted  —— 本仓适配层：上游框架 + 覆盖板级 csc（iNextOS 口名/角色）+ roceos 后台
-#               + 角色归一（EEE 不关，按官方默认）。默认档。
-#   official —— 纯官方基线：上游 armbian-easepi 自带的 nanopi-r5s.csc + istorenext
-#               扩展，一行都不改。用途＝权威对照物（也是本仓丢了的那份参照镜像是谁）。
 on:
   workflow_dispatch:
     inputs:
       profile:
-        description: '构建档位'
+        description: '构建档位：adapted=本仓适配层（默认）｜official=纯官方基线（权威对照物）'
         required: true
         default: adapted
         type: choice
         options:
           - adapted
           - official
+      task:
+        description: '任务：auto=全链｜check=只检查与跟版、不构建｜build=只构建｜dtb=只跑 DTB 快验'
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - check
+          - build
+          - dtb
   push:
     branches: [ main ]
     paths-ignore:
+      # 仅自动记录上游指纹的提交：镜像内容不变，无需重建
       - 'last-upstream-sha'
   schedule:
-    - cron: '0 19 * * *'   # 每日 03:00 CST 检查上游更新（仅当上游变更时才构建）
+    # 每日 03:00（CST / UTC+8）一次跑完：上游跟踪 → roceos 跟版 → DTB 快验 → 构建（按需）
+    - cron: '0 19 * * *'
 
-# 同一 ref 只允许一发在跑：手动 dispatch 两次会并行烧掉两轮 90 分钟
-# （concurrency 只对新 run 生效，补它之前已在跑的那发要手动 cancel）。
+# 同一个 ref 只允许一发在跑：新 push / dispatch 会顶掉在跑的那一发（含它的 roceos 跟版；
+# 跟版是幂等的：release 用 --clobber 覆盖、pin 无变化就不提交，重跑不会留半成品）。
 concurrency:
-  group: lyw-rr-image-${{ github.ref }}
+  group: rr-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 上游指纹与 roceos pin 都要写回仓库 ⇒ contents: write（发 release 也是它）
+permissions:
+  contents: write
+
 jobs:
+  # ── ① 上游框架跟踪（jjm2473/armbian-easepi @ easepi-v26.02）────────────────────
   upstream:
-    name: Check upstream framework (armbian-easepi)
+    name: 上游跟踪（armbian-easepi @ easepi-v26.02）
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    # dispatch 选「只构建」「只跑 DTB」时跳过上游比对
+    if: github.event_name != 'workflow_dispatch' || inputs.task == 'auto' || inputs.task == 'check'
     outputs:
       changed: ${{ steps.cmp.outputs.changed }}
       sha: ${{ steps.cmp.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-      - name: Compare upstream HEAD with recorded sha
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: 比对上游 HEAD 与仓内记录的指纹
         id: cmp
-        # 必须 authenticated：2026-10-31 hh#28 / rr 同类步骤都栽在匿名调用上 —— 共享 runner
-        # 的出口 IP 会被 api.github.com 限流到 403，本 job 红了会让 build（needs: upstream）
-        # 直接 skipped，镜像压根不开始编。token 用 env 传，不写进脚本文本。
+        # 必须带 token：共享 runner 的出口 IP 匿名调 api.github.com 会被打到 403，
+        # 本 job 一红，下游就 skipped（lyw-hh run #28 实录）。token 走 env，不嵌进 run 文本。
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -56,15 +94,18 @@ jobs:
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')
           OLD=$(cat last-upstream-sha 2>/dev/null | tr -d '\n' || echo none)
           echo "上游 easepi-v26.02 HEAD : $UP"
-          echo "本仓库记录的指纹       : $OLD"
+          echo "本仓库记录的指纹         : $OLD"
           if [ "$UP" = "$OLD" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "上游无变化 ⇒ 本次不因上游触发构建。"
           else
             echo "changed=true"  >> "$GITHUB_OUTPUT"
             echo "sha=$UP"       >> "$GITHUB_OUTPUT"
+            echo "上游已更新 ⇒ 本次构建最新框架。"
           fi
-      - name: Record new upstream sha
-        if: steps.cmp.outputs.changed == 'true'
+
+      - name: 记录新的上游指纹（手动「只检查」模式不写回）
+        if: steps.cmp.outputs.changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.task != 'check')
         run: |
           set -eu
           echo "${{ steps.cmp.outputs.sha }}" > last-upstream-sha
@@ -74,11 +115,201 @@ jobs:
           git commit -m "chore: 记录上游框架指纹 ${{ steps.cmp.outputs.sha }} [skip ci]"
           git push origin HEAD:${{ github.ref_name }}
 
+  # ── ② roceos 跟版（跟官方在线升级通道，不跟固件镜像里的版本）──────────────────
+  # 合并前的 check-roceos.yml + sync-roceos.yml：核对 → 重建载荷 → 发本仓 release
+  # → 改三处 pin（扩展常量 / 本文件的 curl 校验 / official-roceos.txt）→ 推送。
+  roceos:
+    name: roceos 跟版（核对 → 重建载荷 → 发 release → 改三处 pin）
+    needs: upstream
+    # 上游比对失败（403 / 网络抖动）不该吞掉跟版与构建；被 cancel 时才停。
+    if: |
+      always() && !cancelled()
+      && (github.event_name != 'workflow_dispatch' || inputs.task == 'auto' || inputs.task == 'check')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    outputs:
+      new: ${{ steps.sync.outputs.new }}
+      version: ${{ steps.ver.outputs.version }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # upstream 可能刚推了 last-upstream-sha，取最新提交再改 pin
+          ref: ${{ github.ref_name }}
+
+      - name: 核对「镜像内置版本」vs 官方 stable_arm/arm64
+        id: ver
+        run: |
+          set +e
+          python3 tools/check-roceos.py --pinned official-roceos.txt --summary "$GITHUB_STEP_SUMMARY"
+          rc=$?
+          # 0=一致 1=落后（下一步自动跟版，这里不判红）2=输入/网络错误 ⇒ 红
+          case "$rc" in
+            0|1) ;;
+            *) echo "!! roceos 版本核对失败（rc=$rc）"; exit "$rc" ;;
+          esac
+          v=$(sed -n 's/^version:[[:space:]]*//p' official-roceos.txt | head -1)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "镜像内置 roceos = ${v}"
+
+      - name: 跟版（下官方包 → 按安装映射重建载荷 → 改三处 pin）
+        id: sync
+        # 手动「只检查」模式不写仓库；其余一律试一次（已是最新时 rc=0，几秒退出）
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.task != 'check' }}
+        run: |
+          set +e
+          python3 tools/roceos-sync.py --repo lyw-rr
+          rc=$?
+          # 0=已最新 10=已重建并改好 pin 2=输入/网络/校验失败
+          case "$rc" in
+            0)  echo "已是最新，无需重建"; echo "new=0" >> "$GITHUB_OUTPUT" ;;
+            10) echo "new=1" >> "$GITHUB_OUTPUT" ;;
+            *)  echo "!! 跟版失败（rc=$rc）"; exit "$rc" ;;
+          esac
+
+      - name: 发本仓 release + 提交三处 pin + 推回主干
+        if: steps.sync.outputs.new == '1'
+        run: |
+          set -eu
+          . ./.roceos-sync.env
+          echo "新版本 $NEW_VERSION | 载荷 sha256=$NEW_SHA | roceos=$ROCEOS_SHA"
+          ls -l roceos-payload.tar.gz
+
+          # ① 发 release（tag 已存在就覆盖资产）
+          if gh release view "$NEW_TAG" >/dev/null 2>&1; then
+            gh release upload "$NEW_TAG" roceos-payload.tar.gz --clobber
+          else
+            NOTE="官方包 $PKG_FILENAME（已按接口给的 sha256/size 校验）; roceos sha256=$ROCEOS_SHA; 由 build.yml 的 roceos job 自动生成"
+            gh release create "$NEW_TAG" roceos-payload.tar.gz \
+              --title "roceos 载荷 $NEW_VERSION" \
+              --notes "$NOTE"
+          fi
+
+          # ② 提交三处 pin（载荷与 .roceos-sync.env 在 .gitignore 里）
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "pin 没有变化（可能已同步过），跳过提交"
+          else
+            git commit -m "chore(roceos): 跟官方 $NEW_VERSION —— 载荷重建 + 三处 pin 同步（自动）"
+            # 显式写 ref：checkout 出来的可能是 detached HEAD，裸 `git push` 会报
+            # "You are not currently on a branch"。
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
+
+          # ③ 不用再 dispatch：本 run 的下游 build job 在 needs 之后 checkout
+          #    ${GITHUB_REF_NAME} 的最新提交（含刚推的 pin），直接接着编。
+          echo "下游 build 将使用刚推送的提交（ref=${GITHUB_REF_NAME}）"
+
+  # ── ③ 板级 DTB 快验（原 dtb-verify.yml 的能力，四仓统一）────────────────────
+  # 为什么要有这一层：DTS 的 include/label/宏错只有内核树里的 cpp+dtc 才报，代价是整轮
+  # 构建（实测 3414 / 3608 秒）；而 dts-lint 只挡纯文本形态错。这里用**与内核同款的
+  # cpp+dtc** 编一次板级 DTB（~4 分钟），编不过就停，别开整机。
+  # 取树用 codeload tar 片段，不用 `git clone --filter=blob:none --sparse`（实测漏文件：
+  # dt-bindings/input/linux-event-codes.h 是指向 include/uapi/linux/ 的软链）。
+  dtb:
+    name: DTB 快验（只编板级 DTS + 板级判据）
+    if: |
+      (github.event_name != 'workflow_dispatch' || inputs.task == 'auto' || inputs.task == 'dtb')
+      && (github.event_name != 'workflow_dispatch' || (inputs.profile || 'adapted') != 'official')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout board adaptation
+        uses: actions/checkout@v4
+        with:
+          # 取分支最新提交：同 run 的 roceos 跟版可能刚推了新的 pin
+          ref: ${{ github.ref_name }}
+          path: rr
+
+      - name: Install dtc / cpp
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq device-tree-compiler
+          dtc --version
+
+      - name: 判据自测（负例不响 = 判据没在干活）
+        run: |
+          set -e
+          echo "--- dts-lint 自测 + 板级 DTS 语法门 ---"
+          python3 rr/tools/dts-lint.py --selftest
+          python3 rr/tools/dts-lint.py rr/patch/kernel/archive/rockchip64-6.18/dt/rk3568-nanopi-r5s.dts
+
+      - name: 取内核树里的 dts / dt-bindings（codeload tar 片段）
+        run: |
+          set -e
+          curl -fL --retry 3 -o /tmp/kern.tar.gz \
+            https://codeload.github.com/gregkh/linux/tar.gz/refs/heads/linux-6.18.y
+          ls -lh /tmp/kern.tar.gz
+          mkdir -p kern
+          tar -xzf /tmp/kern.tar.gz -C kern --strip-components=1 --wildcards \
+              '*/arch/arm64/boot/dts/rockchip/*' \
+              '*/include/dt-bindings/*' \
+              '*/include/uapi/linux/*' \
+              '*/scripts/dtc/include-prefixes/*'
+          du -sh kern/arch/arm64/boot/dts/rockchip kern/include/dt-bindings
+          ls -l kern/scripts/dtc/include-prefixes/dt-bindings
+
+      - name: 用内核同款 cpp + dtc 编译板级 DTB
+        run: |
+          set -e
+          cp rr/patch/kernel/archive/rockchip64-6.18/dt/rk3568-nanopi-r5s.dts kern/arch/arm64/boot/dts/rockchip/
+          cd kern
+          # 与 scripts/Makefile.lib 的 dtc_cpp_flags 同款（多给两条兜底 include 路径）
+          cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+              -I scripts/dtc/include-prefixes \
+              -I arch/arm64/boot/dts/rockchip \
+              -I include/dt-bindings \
+              -I include \
+              arch/arm64/boot/dts/rockchip/rk3568-nanopi-r5s.dts -o /tmp/board.prev.dts
+          dtc -I dts -O dtb -o /tmp/rk3568-nanopi-r5s.dtb /tmp/board.prev.dts
+          ls -l /tmp/rk3568-nanopi-r5s.dtb
+          md5sum /tmp/rk3568-nanopi-r5s.dtb
+
+      - name: 板级 DTB 断言（字节级：EEE / 时序两处本仓改过的地方）
+        # 只断本仓改过的两项（判据边界见技能 §24）：
+        #   ① 千兆 PHY 节点有 eee-broken-1000t（1G EEE 关闭；属性名在 DTB strings 段）
+        #   ② phy-mode 是 rgmii 而不是 rgmii-id（rgmii-id 在 rk3568 dwmac 上会清零 MAC 侧延迟，
+        #      实测 56B 丢 65% / 1400B 丢 90%，而接口错误计数为 0）
+        run: |
+          set -e
+          python3 - /tmp/rk3568-nanopi-r5s.dtb <<'PY'
+          import sys
+          p = sys.argv[1]
+          d = open(p, 'rb').read()
+          assert d[:4] == b'\xd0\x0d\xfe\xed', '不是 FDT（魔数不对）: %r' % d[:4]
+          assert b'eee-broken-1000t' in d, 'DTB 里没有 eee-broken-1000t（千兆 EEE 没关，实机会静默收不到包）'
+          assert b'rgmii-id' not in d, 'DTB 里仍有 rgmii-id（会把 MAC 侧 tx/rx delay 清零）'
+          assert b'rgmii\x00' in d, 'DTB 里没有 phy-mode="rgmii"'
+          print('    ✅ eee-broken-1000t 在位 / 无 rgmii-id / phy-mode=rgmii')
+          PY
+
+      - name: 上传 DTB（本机可复核，也是整机构建的对照件）
+        uses: actions/upload-artifact@v4
+        with:
+          name: rr-dtb
+          path: |
+            /tmp/rk3568-nanopi-r5s.dtb
+            /tmp/board.prev.dts
+          if-no-files-found: error
+
   build:
     name: Build iNextOS image (NanoPi R5S / RK3568)
-    needs: upstream
-    # always()：上游指纹检查自身失败（403 / 网络抖动）不应该把 push / dispatch 触发的构建一起吞掉。
-    if: always() && (github.event_name != 'schedule' || needs.upstream.outputs.changed == 'true')
+    needs: [upstream, roceos, dtb]
+    # 触发判据（合并后统一口径）：
+    #   · 手动 dispatch：只有 task=auto / build 才构建（check / dtb 不构建）
+    #   · 定时 schedule：上游有变化、或 roceos 刚跟到新版（pin 变了）才构建
+    #   · push：总是构建
+    #   · always()：上游比对失败（403/抖动）不吞掉 push/dispatch 的构建
+    #   · DTB 快验红 ⇒ 不构建（快验就是用来挡整机的，别白烧 90 分钟）
+    if: |
+      always() && !cancelled()
+      && needs.dtb.result != 'failure'
+      && (github.event_name != 'workflow_dispatch' || inputs.task == 'auto' || inputs.task == 'build')
+      && (github.event_name != 'schedule' || needs.upstream.outputs.changed == 'true' || needs.roceos.outputs.new == '1')
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
@@ -87,6 +318,8 @@ jobs:
       - name: Checkout board adaptation
         uses: actions/checkout@v4
         with:
+          # 取分支最新提交：同 run 的 roceos 跟版可能刚推了新的 pin
+          ref: ${{ github.ref_name }}
           path: rr
 
       - name: Checkout iNextOS build framework (armbian-easepi)

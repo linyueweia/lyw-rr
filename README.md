@@ -125,7 +125,8 @@
 - **roceos 版本口径（2026-10-31）**：镜像内置 roceos = 官方在线通道的最新版 **3.0.2**
   （`channel=stable_arm`、`arch=arm64`，取自官方更新服务器 `update.roceos.com:14380` +
   在役实机 OTA 后的 `/opt/roceos`）。版本记录在 `official-roceos.txt`；
-  `.github/workflows/check-roceos.yml` 每天比对一次，官方发了新版就红（= 该重建载荷）。
+  由 `.github/workflows/build.yml` 的 `roceos` job 每天核对并**自动跟版**（重建载荷 + 发本仓
+  release + 改三处 pin + 推送；同一次 run 的 build 直接接着编）。
   取件与打包步骤见 `docs/` 的「roceos 载荷怎么跟官方版本」。
 
 - 与官方 csc 的对齐（2026-10-31）：`FULL_DESKTOP`/`BOOT_LOGO` 恢复官方同值
@@ -236,7 +237,7 @@ tools/verify-image.sh            # 镜像自证（判据即代码；adapted/offi
 tools/role-map-check.py          # ROLE_MAP 口径判据（构建早期对仓库默认值 + 构建后对镜像里那份，同一份代码）
 tools/overlay-makefile-patch.py  # 把 config/overlays/*.dtso 登记进框架 overlay 的 Makefile（只拷 .dtso 不登记＝不编译）
 tools/tests/                     # 判据脚本自测（布局探测 / role-map / 风扇自检 / overlay 登记），构建前必跑
-.github/workflows/build.yml      # 上游指纹跟踪 + 双 profile 构建 + 自证 + 产物
+.github/workflows/build.yml      # 唯一工作流：上游跟踪 + roceos 跟版 + DTB 快验 + 双 profile 构建 + 自证 + 产物
 docs/R5S-适配工作流与判据.md      # 现象→根因→修复→验收 表 + 上板流程
 ```
 

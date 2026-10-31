@@ -126,7 +126,8 @@ GET http://update.roceos.com:14380/api/v1/updates/check?version=<当前>&channel
 - **channel 必须是 `stable_arm`**：用 `stable` 查会拿到 `roceos-v3.0.2-x86_64.tar.gz`（x86 包）。
 - 设备侧显示「稳定版」，`/opt/roceos/version.json` = `{"version":"3.0.2","channel":"稳定版"}`。
 - 快捷自查：`python3 tools/check-roceos.py --pinned official-roceos.txt`（rc=1 表示落后）。
-- CI：`.github/workflows/check-roceos.yml` 每天 03:30 CST 跑同一个脚本，落后即红（= 该重建载荷）。
+- CI：`.github/workflows/build.yml` 的 `roceos` job 每天 03:00 CST 跑同一个脚本并**自动跟版**
+  （重建载荷 → 发本仓 release → 改三处 pin → 推送）；落后不再只是红，除非跟版本身失败。
 
 ### 重建载荷（两条路线，都验证过）
 
