@@ -107,3 +107,67 @@ sudo dd if=/dev/sdX bs=4M count=$(( $(stat -c%s output/images/*.img) / 4194304 +
   确实装着这 6 个包（python3-flask/-werkzeug/-jinja2/-itsdangerous/-markupsafe/-blinker）
   ⇒ 保留 = 与官方同口径；载荷 `dist-packages` 只作兜底。
 - 自测：`python3 tools/packages-parity-check.py --selftest`（3 正例 + 6 负例 + 1 聚合口径）。
+
+## roceos 载荷怎么跟官方版本（2026-10-31 定案）
+
+**一句话**：roceos 是 iNextOS 的网页后台，**不在 armbian-easepi 框架里**，它有自己的在线升级通道；
+固件镜像里打进去的版本必然落后于线上最新版（实证：官方 A2 2.9.1 固件镜像内 `roceos` 是 2.9.x，
+而同一台实机 OTA 后已经是 **3.0.2**）。所以「跟官方」要跟的是更新服务器，不是镜像。
+
+### 官方更新地址（不是文档抄的，是从 roceos 二进制里取的常量）
+
+```
+GET http://update.roceos.com:14380/api/v1/updates/check?version=<当前>&channel=stable_arm&arch=arm64
+⇒ {"up_to_date":false,"latest":{"version":"3.0.2","channel":"stable_arm","type":"app",
+     "filename":"roceos-v3.0.2-arm64.tar.gz","sha256":"a997a2f8…","size":60458760,
+     "released_at":"2026-10-30T14:44:09+08:00","changelog":"…"}}
+```
+
+- **channel 必须是 `stable_arm`**：用 `stable` 查会拿到 `roceos-v3.0.2-x86_64.tar.gz`（x86 包）。
+- 设备侧显示「稳定版」，`/opt/roceos/version.json` = `{"version":"3.0.2","channel":"稳定版"}`。
+- 快捷自查：`python3 tools/check-roceos.py --pinned official-roceos.txt`（rc=1 表示落后）。
+- CI：`.github/workflows/check-roceos.yml` 每天 03:30 CST 跑同一个脚本，落后即红（= 该重建载荷）。
+
+### 重建载荷（两条路线，都验证过）
+
+**路线 A（本次采用）：从在役实机取** —— 实机已经 OTA 到最新版，取到的就是 arm64 真件：
+
+```bash
+ssh root@<在役实机> 'tar czf /tmp/roceos-tree.tar.gz -C /opt --exclude="roceos/data" --exclude="roceos/logs" roceos'
+scp root@<在役实机>:/tmp/roceos-tree.tar.gz .
+```
+
+**路线 B：从官方固件镜像取**（镜像里是发布时的版本，可能落后于 OTA）：
+
+```bash
+xz -dc <官方 img.xz> > ref.img          # 约 4.0GiB
+# Linux 上：losetup -Pf --show ref.img → mount -o ro <loop>p2 /mnt/ref → /mnt/ref/opt/roceos
+# Windows 上：用仓库脚本 tools/…/ext4 只读解析（或用任意 ext4 读取工具）读 /opt/roceos
+```
+
+### 打包规则（payload v2 实证）
+
+1. 以 **payload v1 为骨架**（它含 `opt/roceos-ai/`、`etc/nginx/{sites-available,ssl}`、
+   `etc/systemd/system/roceos*.service`、`lib/firmware/aic8800/`、`usr/lib/python3/dist-packages/`）；
+2. 删掉骨架里的 `opt/roceos`，换成路线 A/B 取到的**整棵树**（`data/`、`logs/` 必须排除）；
+3. 确定性打包（成员排序、mtime/uid/gid 归零）→ `roceos-payload.tar.gz`（v2 = 88.1 MiB）；
+4. 发 release（tag `roceos-payload-v2`，仓库 linyueweia/lyw-OS）→ 拿到 sha256。
+
+### 判据（缺一不可）
+
+```bash
+# ① 载荷里的 roceos 与官方件逐字节一致（本次 = 实机 8c96b9e7…）
+tar -xzOf roceos-payload.tar.gz ./opt/roceos/roceos | sha256sum
+# ② version.json 在位且是目标版本
+tar -xzOf roceos-payload.tar.gz ./opt/roceos/version.json
+# ③ data/ 与 logs/ 没被打进去（打进去 = 把别人家的数据库带到新机器上）
+tar -tzf roceos-payload.tar.gz | grep -E 'opt/roceos/(data|logs)' && echo 失败 || echo 干净
+```
+
+### 版本一变要同步改的三处（少一处就静默用旧件）
+
+1. `official-roceos.txt` 的 `version:` / `payload_sha256:`；
+2. 扩展 `extensions/*-roceos.sh` 的 `ROCEOS_PAYLOAD_SHA256`；
+3. workflow `build.yml` 里 `curl` 之后那行 `sha256sum -c` 的期望值（与 (2) 同值）。
+
+改完 push 会触发整机重建（约 1.5~2 小时），产物自证里 roceos 段会核对落盘件。

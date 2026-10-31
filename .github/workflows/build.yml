@@ -270,9 +270,9 @@ jobs:
         run: |
           set -e
           mkdir -p build/userpatches/overlay
-          URL="https://github.com/linyueweia/lyw-OS/releases/download/roceos-payload-v1/roceos-payload.tar.gz"
+          URL="https://github.com/linyueweia/lyw-OS/releases/download/roceos-payload-v2/roceos-payload.tar.gz"
           curl -fsSL -o build/userpatches/overlay/roceos-payload.tar.gz "$URL"
-          echo "6b819584a1b1701163f8983bd59a31821643f64dd65c76ba8f500ef54c5e8bb5  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
+          echo "cbd911c6fad5a3655bc52a39e4099b8812c70d8358840e1d1d8bf6db956703d1  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
           ls -l build/userpatches/overlay/
 
       - name: Set up QEMU (binfmt_misc for arm64 cross-build)

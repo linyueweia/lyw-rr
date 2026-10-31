@@ -122,6 +122,12 @@
   官方里面确实装着 `python3-flask/-werkzeug/-jinja2/-itsdangerous/-markupsafe/-blinker`
   这 6 个包 ⇒ 我们原先的写法是对的，不要为了"少几个包"去删它；
   载荷里的 `dist-packages` 只作 apt 无 DNS 时的兜底。
+- **roceos 版本口径（2026-10-31）**：镜像内置 roceos = 官方在线通道的最新版 **3.0.2**
+  （`channel=stable_arm`、`arch=arm64`，取自官方更新服务器 `update.roceos.com:14380` +
+  在役实机 OTA 后的 `/opt/roceos`）。版本记录在 `official-roceos.txt`；
+  `.github/workflows/check-roceos.yml` 每天比对一次，官方发了新版就红（= 该重建载荷）。
+  取件与打包步骤见 `docs/` 的「roceos 载荷怎么跟官方版本」。
+
 - 与官方 csc 的对齐（2026-10-31）：`FULL_DESKTOP`/`BOOT_LOGO` 恢复官方同值
   （前者是框架废弃变量，`lib/` 全仓无读取者；后者只在 `BUILD_DESKTOP=yes` 时生效，
   见 `distro-agnostic.sh:591`），桌面仍由 CI 的 `BUILD_DESKTOP=no` 关掉 —— 产物不变，

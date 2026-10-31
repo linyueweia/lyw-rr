@@ -7,7 +7,7 @@
 #   服务 + nginx 站点与证书 —— 但上游构建框架 jjm2473/armbian-easepi【不带】这
 #   些文件，官方是靠自己的发布流水线注入的。本仓照 lyw-kk 的既有做法，走框架的
 #   正规通道 userpatches/overlay 在构建阶段装进镜像（载荷取自 lyw-OS release
-#   roceos-payload-v1，sha256 钉死，内容一变立即失败）。
+#   roceos-payload-v2，sha256 钉死，内容一变立即失败）。
 #   不装 = 板子能启动、网络能通，但网页后台是空页面。
 #
 # 用 post_post_debootstrap_tweaks 这个早期钩子的原因（lyw-kk 实测）：
@@ -20,8 +20,8 @@
 #   屏蔽 —— 屏蔽错会丢串口登录；改为在 tools/verify-image.sh 里断言不得存在。
 # ══════════════════════════════════════════════════════════════════════════
 
-# 载荷 sha256（= lyw-OS release roceos-payload-v1；内容一变就报错）
-ROCEOS_PAYLOAD_SHA256="6b819584a1b1701163f8983bd59a31821643f64dd65c76ba8f500ef54c5e8bb5"
+# 载荷 sha256（= lyw-OS release roceos-payload-v2；内容一变就报错）
+ROCEOS_PAYLOAD_SHA256="cbd911c6fad5a3655bc52a39e4099b8812c70d8358840e1d1d8bf6db956703d1"
 
 function post_post_debootstrap_tweaks__lyw_rr_roceos() {
 	display_alert "Installing roceos web UI (NanoPi R5S)" "$EXTENSION" "info"

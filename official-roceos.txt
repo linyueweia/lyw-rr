@@ -1,0 +1,24 @@
+# 本仓镜像内置的 roceos（iNextOS 网页后台）版本 —— CI 的 check-roceos.yml 每天核对
+#
+# 为什么不跟 frameworks 的 last-upstream-sha：roceos 不在 armbian-easepi 仓库里，
+# 它有自己的在线升级通道（官方更新服务器），固件镜像里的版本必然落后于线上最新版。
+#
+# 数据来源：官方更新服务器（2026-10-31 实机取证，地址取自 roceos 二进制里的常量）
+#   GET http://update.roceos.com:14380/api/v1/updates/check?version=<当前>&channel=stable_arm&arch=arm64
+#   ⇒ {"latest":{"version":"3.0.2","filename":"roceos-v3.0.2-arm64.tar.gz","sha256":"a997a2f8…","size":60458760,…}}
+#
+# 注意 channel：arm64 设备走的是 stable_arm（发 stable 只会拿到 x86_64 包）。
+
+version: 3.0.2
+channel: stable_arm（设备显示「稳定版」）
+arch: arm64
+payload: roceos-payload-v2
+payload_sha256: cbd911c6fad5a3655bc52a39e4099b8812c70d8358840e1d1d8bf6db956703d1
+roceos_sha256: 8c96b9e7811d4369958cbda7b45289531a9076007e51aed7c671fe642d960cfe
+roceos_size: 76230504
+# 载荷来源：实机 iNextOS-T68M（192.168.11.1，iNextOSA 26.2.1，官方 OTA 到 3.0.2）
+#           tar 时排除 /opt/roceos/data 与 /opt/roceos/logs；其余（assets/ www/ bin/ config.yaml version.json）原样。
+# 固件镜像对照：官方 iNextOSA 26.2.1_Easepi-a2（发布版 2.9.1，2026-09-30，
+#           xz sha256 a8cdf1d25983fe7a659c1d6ee2a9bd01c20e43784b22e6c30a88d36ea7a41747）
+#           镜像内 /opt/roceos/roceos = 04c432c237eea90b…（2.9.x），且没有 version.json（未 OTA 过）。
+#           ⇒ 「跟官方当前版本」应以更新服务器/实机 OTA 后的版本为准，不是镜像里的版本。
