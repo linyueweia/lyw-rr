@@ -34,6 +34,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 BASE = "http://update.roceos.com:14380"
@@ -68,17 +69,26 @@ def http_get(url, timeout=120):
         return r.read()
 
 
-def download(url, dest, timeout=900, chunk=1 << 20):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    total = 0
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
-        while True:
-            b = r.read(chunk)
-            if not b:
-                break
-            f.write(b)
-            total += len(b)
-    return total
+def download(url, dest, timeout=900, chunk=1 << 20, attempts=3):
+    """下载到 dest；与 Content-Length 不符就重来（实测被截断过一次：92MB 变 67MB，静默成功）。"""
+    last = None
+    for i in range(1, attempts + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        total = 0
+        with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+            want = r.headers.get("Content-Length")
+            while True:
+                b = r.read(chunk)
+                if not b:
+                    break
+                f.write(b)
+                total += len(b)
+        if want is None or int(want) == total:
+            return total
+        last = (int(want), total)
+        print("  …下载不完整（%d/%d B），第 %d 次重试" % (total, int(want), i), file=sys.stderr)
+        time.sleep(2 * i)
+    raise SystemExit("!! 下载始终不完整：期望 %d B，实际 %d B" % (last if last else (0, 0)))
 
 
 def read_kv(path):
@@ -108,7 +118,17 @@ def query_latest(cur):
 # ────────────────────────── 载荷重建 ──────────────────────────
 
 def map_member(rel):
-    """官方包内相对路径 → 载荷内相对路径；None = 不进镜像。"""
+    """官方包内相对路径 → 载荷内相对路径；None = 不进镜像。
+
+    逐哈希核对官方 3.0.2 包 vs 实机 /opt/roceos 得出的对应表（761/773 命中唯一同哈希）：
+        bin/<x>              → /opt/roceos/<x>        ← 注意 bin/ 前缀要去掉，实机没有 bin/ 这一层
+        version.json         → /opt/roceos/version.json
+        www/**               → /opt/roceos/www/**
+        assets/librkllmrt.so → /opt/roceos-ai/librkllmrt.so
+        assets/roceos-ai-server.py → /opt/roceos-ai/server.py
+        systemd/*.service    → /etc/systemd/system/*.service
+        manifest.json / required-packages.json → 安装器消费，不进镜像
+    """
     if rel in ("manifest.json", "required-packages.json", ""):
         return None
     if rel.startswith("systemd/"):
@@ -119,6 +139,8 @@ def map_member(rel):
         return "opt/roceos-ai/server.py"
     if rel.startswith("assets/"):
         return None
+    if rel.startswith("bin/"):
+        return "opt/roceos/" + rel[len("bin/"):]
     return "opt/roceos/" + rel
 
 
@@ -309,6 +331,14 @@ def main(argv=None):
         "# 重建：  python3 tools/roceos-sync.py --repo <本仓>（四仓各一份，只用 GITHUB_TOKEN）",
         "# 别手改 version/payload_sha256/payload_url —— 下次同步会覆盖；要钉死请停用 sync 工作流。",
     ]
+    # 保留原文件里人手写的解释性注释（历史取证备注），别被自动重写冲掉
+    try:
+        old_header = [l.rstrip() for l in open(txt, encoding="utf-8") if l.startswith("#")]
+    except OSError:
+        old_header = []
+    for l in old_header:
+        if l not in header:
+            header.append(l)
     patch_pins(repo_dir, a.repo, old_sha, new_sha, old_url, new_url, kv2, txt, header)
 
     env = os.path.join(repo_dir, ".roceos-sync.env")
