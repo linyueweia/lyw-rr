@@ -42,7 +42,7 @@
 | board csc（u-boot v2024.04 / DDR 1560_v1.21 / DTB / overlay / UMS-RockUSB 配置）| **官方**，照用 | 本仓 csc = 上游同名文件 fork，仅替换网口命名一节 |
 | `istorenext` 扩展（整套 iNextOS 包、12G rootfs、4G swap、网络链两件套）| **官方**，照用 | `ENABLE_EXTENSIONS` 里第一项 |
 | 内核配置（`STMMAC_ETH=m`、`R8169=m`、`BLK_DEV_NVME=y`、`LEDS_GPIO=y`…）| **官方值**，本仓只断言 | `lyw-rr-kernel-config.sh` 不改值：上游一旦改掉这些，构建立刻失败而不是上板才发现 |
-| roceos 网页后台（`/opt/roceos` + 3 个服务 + nginx 站点/证书）| 官方镜像**有**、框架**没有** → 本仓注入 | `lyw-rr-roceos.sh`；载荷取自 lyw-OS release，sha256 钉死 |
+| roceos 网页后台（`/opt/roceos` + 3 个服务 + nginx 站点/证书）| 官方镜像**有**、框架**没有** → 本仓注入 | `lyw-rr-roceos.sh`；载荷取自本仓 release，sha256 钉死 |
 | 网口命名钉定（udev 三规则 + `/etc/eth_order` + `.default-network`）| **本仓适配**（替换上游 wan1/lan1/lan2）| 上游命名与 iNextOS 的 `eth*` 网络链不兼容：口名/后台地址会随内核探测顺序漂移 |
 | EEE/LPI（千兆口）| **DT 侧关 1000T**（2026-10-30 定案，与 K1/T68M 同写法）| 板级 DTS（`patch/kernel/archive/rockchip64-6.18/dt/rk3568-nanopi-r5s.dts`）在 `&mdio0` 的 `ethernet-phy@1` 节点写 `eee-broken-1000t`：只关 1G 的 EEE、100M 不动，不需要任何用户态脚本。**历史**：2026-10-13 曾做五层用户态关闭 → 10-17 按 T68M 主路由日志推翻（当时判为"对端重启导致的掉线"）→ 10-28 又按实机 LPI 计数翻回（`Tx LPI` 活跃、`phy_eee_wakeup_error_n` 增长、carrier 仍在但整口收不到包、拔插网线即恢复 = PHY 末端唤醒竞争）⇒ 终案＝DT 属性，不是脚本。两个 2.5G（RTL8125）走 PCIe 网卡驱动、不过 phylib，DT 属性对它们无效，不在本条范围 |
 | roceos 角色归一（`roceos.db` 三张表）| **本仓适配** | 默认 `ROLE_MAP="wan1=eth0 lan1=eth1,eth2"`（1G 当 WAN，两个 2.5G 同属 LAN 桥）；**只在首启套用一次**，之后网页后台改的角色不会被覆盖；脚本只修名字漂移 + 把孤儿口并入 LAN 桥 |
@@ -140,7 +140,7 @@
 
 - **注入前**：csc 里三条 udev 规则 + `DEFAULT_INTERFACE=eth2` 必须在；上游 `wan1/lan1/lan2` 命名必须已不存在；
   四个扩展的钩子/载荷指纹必须在。
-- **roceos 载荷**：sha256 = `6b819584…8bb5` 校验。
+- **roceos 载荷**：`roceos-payload-v2`，sha256 = `cbd911c6…39dd48` 校验（本仓 release）。
 - **角色映射（构建前，秒级）**：`tools/role-map-check.py --src` 对扩展将要写进镜像的默认 `ROLE_MAP` 判口径
   （三口各一次 / 1G 当 WAN / 两个 2.5G 同桥），并拒绝「默认值被抄到别处第二份」；判据脚本自带 15 例负例自测
   （`tools/tests/role-map-check-test.sh`）。构建后再用同一份判据对镜像里那份 `ROLE_MAP` 判一遍。

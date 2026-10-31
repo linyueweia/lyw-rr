@@ -20,7 +20,7 @@ iNextOS 的用户态只认 `eth*` + `/etc/eth_order`，两者默认组合会让�
 |---|---|---|---|---|
 | 1 | 三个网口每次装机名字可能互相错位；`192.168.100.1` 落在哪个物理口不确定；网页后台可能"插了网线也进不去" | 上游 csc 用 udev 把口命名成 `wan1/lan1/lan2`，而 iNextOS 的 `fix-ifaces-name` 只按 `/etc/eth_order` 重命名 `eth*`；`istorenext-init-network` 取 `grep ^eth` 的最后一个口配 IP —— 两种命名体系不交叠，命名回落到内核探测顺序 | csc 里把 udev 命名替换为按设备路径钉死 `eth0/eth1/eth2`，并写 `/etc/eth_order` + `/root/.default-network`（`DEFAULT_INTERFACE=eth2`）| 构建期 `verify-image.sh`（三条规则 + eth_order 内容 + 默认口）+ 上板 `cat /etc/eth_order` / `ip -br addr` |
 | 2 | 首启 NetworkManager 先接管网口，与 ifupdown 抢口 → 该有的地址配不上；**向导完成后再重启，NM 会把 LAN 桥端口摘出去**（本板 2026-10-17 实机：eth1 被摘 → SSH 失联） | 官方 iNextOS 根本不装 NM（EasePi R1 实测 dpkg 里没有 network-manager），框架默认 `NETWORKING_STACK=network-manager` 却会装并启用；NM 给桥端口生成 Wired connection 跑 DHCP，45s 超时（桥端口不可能拿到地址）后 `released from controller device br-lan1` | 初版只加排序 drop-in（`After=istorenext-init-network.service networking.service`）—— 首台实机证明挡不住「向导完成、roceos 运行时建桥」这个阶段；改为 `declare -g NETWORKING_STACK="none"`，镜像里不装 NM | 构建期：csc 断言 + `verify-image.sh` 反断言镜像无 NM；上板：`bridge link show` 里 LAN 口稳定保持 forwarding，重启后 `systemctl status NetworkManager` 不存在 |
-| 3 | 板子能启动、网络通，但 `http://192.168.100.1/` 是空页面 | 官方 iNextOS 镜像自带 `/opt/roceos`，**上游构建框架不带**，官方靠自己的发布流水线注入 | `lyw-rr-roceos.sh`：从 lyw-OS release 取载荷（sha256 钉死）装进镜像 + 建 3 个 wants 链接 + nginx 站点/证书 + 移除 default 站点 | 构建期断言 8 个文件 + 3 链接 + nginx 站点；上板 `curl -I http://192.168.100.1/` |
+| 3 | 板子能启动、网络通，但 `http://192.168.100.1/` 是空页面 | 官方 iNextOS 镜像自带 `/opt/roceos`，**上游构建框架不带**，官方靠自己的发布流水线注入 | `lyw-rr-roceos.sh`：从本仓 release 取载荷（sha256 钉死）装进镜像 + 建 3 个 wants 链接 + nginx 站点/证书 + 移除 default 站点 | 构建期断言 8 个文件 + 3 链接 + nginx 站点；上板 `curl -I http://192.168.100.1/` |
 | 4 | roceos 的"设置向导"把 WAN/LAN 角色按枚举顺序分反 | 角色真源是 `/opt/roceos/data/roceos.db` 三张表（`network_interfaces` / `interface_bindings` / `lan_configs`），不是 `factory-env.json`；向导按枚举顺序分配 | `lyw-rr-net-roles.sh`：开机在 roceos 之前按 `/etc/lyw-rr-net-roles.conf` 幂等纠正三张表（MAC 取实机现值，不写死）| 构建期：脚本/排序断言 + **ROLE_MAP 语义判据**（`tools/role-map-check.py`，构建前对仓库默认值、构建后对镜像里那份，同一份代码；断言「三口各一次 + 1G 当 WAN + 两个 2.5G 同桥」而非某个字面量）；上板 `sqlite3 /opt/roceos/data/roceos.db` 比对口名 |
 | 5 | 2.5G 口"灯亮但拿不到 IP"、整口间歇 Link Down（用网高峰 34 次/3h） | 2026-10-13 曾判为 EEE/LPI 唤醒时序；**2026-10-17 在 T68M 主路由按日志复核推翻**（EEE 本来是关闭态而掉线仍发生，141 次掉线每次伴随对端 1–5 s 内重新 DHCP）；**2026-10-28 又按实机 LPI 计数翻回**：`Tx LPI` 活跃、`phy_eee_wakeup_error_n` 增长、carrier 仍 up 但整口静默收不到包、拔插网线即恢复 = PHY 末端唤醒竞争 | **终案＝DT 侧只关 1000T**：板级 DTS 的千兆 PHY 节点写 `eee-broken-1000t`（100M 不动，不用任何用户态脚本；两个 2.5G 走 PCIe 网卡驱动、不过 phylib，不在本条范围） | 构建期两道：源码节点内 + 镜像 DTB 字节里必须各含 `eee-broken-1000t`；并反断言无任何用户态 EEE 关闭件。上板：`ethtool --show-eee eth0` 的 Advertised 无 `1000baseT/Full`、`ethtool -S eth0 \| grep lpi` 75 秒不增长 |
 | 6 | 更新流程装固件包时把 `armbian-firmware` 连带卸载 → 网卡固件被删、装不回来 | roceos 的"安装依赖"会装发行版固件包，而 `armbian-firmware` 的 control 里 `Provides`+`Conflicts` 了其中一部分 | apt `Pin-Priority: -1` 禁止清单 + 9 个同名空壳包（不留文件）| 构建期断言 pin 文件 |
@@ -47,8 +47,8 @@ mkdir -p build/userpatches/extensions build/userpatches/overlay
 cp rr/extensions/*.sh                        build/userpatches/extensions/
 chmod +x build/userpatches/extensions/*.sh
 curl -fL -o build/userpatches/overlay/roceos-payload.tar.gz \
-  https://github.com/linyueweia/lyw-OS/releases/download/roceos-payload-v1/roceos-payload.tar.gz
-echo "6b819584a1b1701163f8983bd59a31821643f64dd65c76ba8f500ef54c5e8bb5  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
+  https://github.com/linyueweia/lyw-rr/releases/download/roceos-payload-v2/roceos-payload.tar.gz
+echo "cbd911c6fad5a3655bc52a39e4099b8812c70d8358840e1d1d8bf6db956703d1  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
 
 # overlay（LED 修正版 + 风扇）：拷进各内核分支的 overlay 目录，并且【必须登记进 Makefile】
 # —— 框架的 overlay Makefile 是显式枚举每个 dtbo 的，只拷 .dtso 不会编译（run #21 真因）
