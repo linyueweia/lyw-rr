@@ -53,6 +53,25 @@
 | 时钟（`fake-hwclock-load` mask）| **与官方有意差异**（有实机因果链）| 官方 R1 是 enabled；但 `fake-hwclock.data` 是构建日期，开机会盖掉 RTC → roceos 用本机时钟签 JWT，放置数周再开机就「登录一下即退出」（H88K 实机同源机制）。本仓 mask 该 unit + `.data` 写构建时刻 + 自带 timesyncd 就启用。**这是唯一一项与官方形态不同的地方**，可一条命令回滚（`systemctl unmask fake-hwclock-load`）|
 | 风扇温控（pwm-fan overlay + 18C→45C 曲线）| **本仓适配**（主线 DTB 没有风扇支持）| `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso` 打开 pwm0 + 挂 pwm-fan；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，5s 采样、32 档，≤18C 停、45C 满速。**注意：overlay 必须同时登记进框架 overlay 的 Makefile**（`tools/overlay-makefile-patch.py`）—— 框架是显式枚举 dtbo 的，只拷 .dtso 不会编译，风扇就没有 cooling device |
 
+## 关机断电（与官方口径对照）
+
+`poweroff` 后风扇仍转 / 网口灯常亮，在 iNextOS 线上是**官方原样**，且分两种 PMIC：
+
+- **RK809/RK817**（K1 / T68M / 本板）：vendor 6.1 的 `drivers/mfd/rk808.c:1533` **仅当** DTS 写
+  `rockchip,system-power-controller` 才会注册 `rk808_pm_power_off`（写 SLPPIN_DN_FUN +
+  `pinctrl_select_state("pmic-power-off")`），这才是真正关 PMIC 主输出。**本板走主线 6.18**：
+  `drivers/mfd/rk8xx-core.c:875` 两个名字都认，且 `rk3568-nanopi-r5s.dtsi:233` 自带
+  `system-power-controller;` ⇒ 本板有 PMIC 断电路径，**不需要改**。
+- **RK806**（H88K / Easepi R2）：`rk806-core.c:630` 只 lookup `pmic-power-off` 却从不 select，
+  全树没有 rk806 的 `pm_power_off` 注册 ⇒ 只能走 PSCI/ATF，属性无效。
+
+官方对照：`rk3568-easepi-r1.dts` / `rk3568-roc-k40pro.dtsi` **没有** system-power-controller
+（官方 R1 只走 PSCI），`rk3588-easepi-r2.dts` 同样没有。**所以我们不改，保持与官方一致**。
+
+若本板实测关机后仍不断电（判据：`journalctl -b -1 --no-pager | tail -5` 末行是
+`reboot: Power down` 而风扇仍转），那就不是驱动问题，而是 ATF/硬件常供（5V 直通）——
+先量 `vcc5v0_sys`/3.3V 是否还在，再谈方案；**不要**去给 DTS 加 pmic 关机属性（主线正常路径已经在了）。
+
 ## 两档构建 profile
 
 | profile | 内容 | 用途 |
