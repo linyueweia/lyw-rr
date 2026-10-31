@@ -103,7 +103,10 @@ if [ -z "$ROOTDEV" ]; then
 	sudo losetup -d "$LOOP" 2>/dev/null || true
 	exit 1
 fi
-sudo mount "$ROOTDEV" /mnt/ir || { echo "!! 挂载 rootfs（$(basename "$ROOTDEV")）失败"; sudo losetup -d "$LOOP"; exit 1; }
+# 只读挂载：自证只断言、不改镜像。rw 挂载会让 ext4 在 umount 时回写超级块
+# （s_mtime / needs_recovery），于是盘上的 .img 与已上传的 .img.xz 不再同源
+# （lyw-kk 实测：.img.sha 对不上、日志全绿却与产物不同源）。
+sudo mount -o ro "$ROOTDEV" /mnt/ir || { echo "!! 挂载 rootfs（$(basename "$ROOTDEV")）失败"; sudo losetup -d "$LOOP"; exit 1; }
 
 # rootfs 合理性：探测错了就立刻响亮失败，别让它变成一屏假断言（2026-10-16 事故教训）
 if [ ! -d /mnt/ir/etc ] || [ ! -d /mnt/ir/usr ]; then
@@ -122,7 +125,7 @@ fi
 BOOTDIR=/mnt/ir/boot
 [ -f /mnt/ir/boot/firmware/armbianEnv.txt ] && BOOTDIR=/mnt/ir/boot/firmware
 if [ -n "$BOOTDEV" ]; then
-	if sudo mount "$BOOTDEV" /mnt/ib; then
+	if sudo mount -o ro "$BOOTDEV" /mnt/ib; then
 		if [ -f /mnt/ib/armbianEnv.txt ]; then
 			BOOTDIR=/mnt/ib
 		else
@@ -145,6 +148,28 @@ fi
 echo "--- bootdir 内容:"; ls "$BOOTDIR" 2>/dev/null | head -25 | sed 's/^/       /'
 
 # ───────────────────────── 底座判据（两档都跑）─────────────────────────
+echo
+echo "=== [底座] 官方发布件口径（BUILD_MINIMAL / 包集合 / smartmontools）"
+# ① 镜像文件名必须带 _minimal —— 框架 rootfs-to-image.sh:21 只在 BUILD_MINIMAL=yes
+#    时加这个后缀；官方 EasePi R1 发布件就是 …_minimal.img（718 包）。
+case "$(basename "$IMG")" in
+	*_minimal*) ok "镜像名含 _minimal（BUILD_MINIMAL=yes，与官方同口径）" ;;
+	*) bad "镜像名不含 _minimal（BUILD_MINIMAL 没传 yes → 会装整份 packages.additional）" ;;
+esac
+# ② 整份 packages.additional 黑名单：官方 minimal 里一个都没有（名单与 lyw-OS 同源）。
+#    危害最直接的两个：avahi-autoipd（DHCP 失败塞 169.254）、unattended-upgrades（后台升级重启网络）。
+if [ -e /mnt/ir/var/lib/dpkg/status ]; then
+	for p in avahi-autoipd unattended-upgrades vnstat iperf3 plymouth dkms rng-tools-debian build-essential; do
+		grep -q "^Package: ${p}$" /mnt/ir/var/lib/dpkg/status 2>/dev/null \
+			&& bad "出现 packages.additional 成员 ${p}（官方 minimal 不含，BUILD_MINIMAL 应为 yes）" \
+			|| ok "不含 ${p}"
+	done
+	# ③ smartmontools 的两条断言放在 adapted 段（见下）：它是本仓 csc 钩子删的链接，
+	#    official 对照档（纯上游）本来就不修，用 adapted 判据去判它只会得到无意义的红。
+else
+	bad "rootfs 里找不到 /var/lib/dpkg/status（无法核对包集合口径）"
+fi
+
 echo
 echo "=== [底座] boot 引导链"
 if [ -f "$BOOTDIR/armbianEnv.txt" ]; then
@@ -415,6 +440,16 @@ if [ "$PROFILE" = "adapted" ]; then
 
 	echo
 	echo "=== [适配层] 反断言：不该有的东西"
+	# smartmontools = 官方 R1 口径「包在、不启用」（2026-10-29 实机取证）：
+	# 官方 R1 的 unit 存在，但 multi-user.target.wants 里没有链接；我们的镜像被 Debian
+	# preset 构建期自动 enable → 每次开机 smartd 退 17「No devices to monitor」长期 failed。
+	# 反向中的反向：包本身必须还在（官方 R1 同样发行它，卸载是自造差异）。
+	grep -q "^Package: smartmontools$" /mnt/ir/var/lib/dpkg/status 2>/dev/null \
+		&& ok "smartmontools 包在位（官方 R1 同样发行）" \
+		|| bad "smartmontools 包缺失（官方 R1 发行它；卸载是自造差异，不是对齐官方）"
+	SM=$(wants_link smartmontools.service)
+	[ -z "$SM" ] && ok "反断言：smartmontools 未被 enable（官方 R1 同款：包在、不启用）" \
+		|| bad "smartmontools 被 enable（${SM#/mnt/ir}）—— SD/eMMC 无 SMART，开机必 failed"
 	FIQ=$(wants_link serial-getty@ttyFIQ0.service); [ -z "$FIQ" ] \
 		&& ok "反断言：未启用 ttyFIQ0 getty" \
 		|| bad "启用了 serial-getty@ttyFIQ0（${FIQ#/mnt/ir}）—— 本板 current 分支用 ttyS2，会拖慢启动"

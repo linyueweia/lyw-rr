@@ -3,8 +3,12 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # 本文件 = 上游 jjm2473/armbian-easepi (branch easepi-v26.02) 的
 #   config/boards/nanopi-r5s.csc 的【iNextOS 适配版】。
-# 上游原文（2026-10-16 抄录，HEAD e5ff78d6）除下面这一处【网口命名与角色】
-# 之外逐字保留；改动处全部用 ##iNextOS 标注，便于以后与上游 diff 合并。
+# 上游原文（2026-10-16 抄录，HEAD e5ff78d6）除以下几处改动外逐字保留，
+# 改动处全部用 ##iNextOS 标注，便于以后与上游 diff 合并：
+#   ① 网口命名与角色（上游 wan1/lan1/lan2 → iNextOS eth0..eth2 + eth_order）
+#   ② RELEASE 钉死（框架无板级默认，不钉会停在交互选择）
+#   ③ FULL_DESKTOP=no（与 CI 的 BUILD_DESKTOP=no 同口径，产物无桌面残留）
+#   ④ hold dtb + smartmontools 只删启用链接（对齐官方发布件，见对应钩子注释）
 #
 # 为什么必须改（证据，不是推测）：
 #   上游本文件的原文用 udev 把三个口命名成 wan1/lan1/lan2，并写
@@ -60,12 +64,21 @@ BOARD_MAINTAINER="linyueweia"   ##iNextOS: 上游为 utlark（上游文件 fork�
 BOOT_SOC="rk3568"
 KERNEL_TARGET="current,edge"
 KERNEL_TEST_TARGET="current"
+
+# ── 根文件系统发行版（与 CI 的 RELEASE=trixie、README 的「Debian trixie」同值）──
+# 框架没有板级/家族默认 RELEASE（rockchip64_common.inc 与 rk35xx.conf 都不设），
+# 不传就停在交互选择 —— 漏传一次，本地产物就和 CI 产物不是同一个发行版。
+# 官方 EasePi R1 发布件是 Debian trixie（718 包，文件名带 `_minimal`）。
+declare -g RELEASE="trixie"
+
 BOOT_FDT_FILE="rockchip/rk3568-nanopi-r5s.dtb"
 SRC_EXTLINUX="no"
 ASOUND_STATE="asound.state.station-m2" # TODO verify me
 IMAGE_PARTITION_TABLE="gpt"
-FULL_DESKTOP="yes"
-BOOT_LOGO="desktop"
+# NAS CLI 镜像（CI 固定 BUILD_DESKTOP=no）：不要桌面包、不要桌面 logo。
+# 官方发布件的 FULL_DESKTOP 写法是 yes，但官方产出的也是 CLI 镜像 —— 所以本仓的
+# 「官方口径」= 与官方产物一致（无桌面），不是照抄上游 csc 的默认值。
+FULL_DESKTOP="no"
 
 # ── 网络栈：不装 NetworkManager（对齐官方 iNextOS 设备 / 与 lyw-OS 同一条）──
 # 权威依据：官方 EasePi R1 镜像实测（lyw-OS 的 csc 里已记录）—— dpkg 里根本没有
@@ -82,6 +95,23 @@ BOOT_LOGO="desktop"
 # extensions" 分支）。时间同步不受影响：ntpsec-ntpdate 由 istorenext 扩展带入。
 declare -g NETWORKING_STACK="none"
 
+# ── 扩展与本地构建（参数必须与 CI 完全一致，否则产物不是同一件东西）──────
+# CI 用 ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan"
+# 传入；本地构建不带就出一个没有 roceos 后台、没有口名/角色的镜像，且过程不报错：
+#   ./compile.sh build BOARD=nanopi-r5s BRANCH=current RELEASE=trixie \
+#     ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan" \
+#     BUILD_MINIMAL=yes BUILD_DESKTOP=no KERNEL_CONFIGURE=no EXPERT=yes
+#
+# BUILD_MINIMAL=yes 是**官方口径**，不是性能选项（2026-10-30 对齐定案）：
+#   官方 EasePi R1 发布件文件名带 `_minimal`（框架 rootfs-to-image.sh:21 只有 yes 才加），
+#   实测 718 个包。传 no 时框架会装 config/cli/<rel>/main/packages.additional 整份，
+#   实测 958 包，多出 avahi-autoipd / unattended-upgrades / vnstat / iperf3 / plymouth /
+#   dkms / rng-tools / build-essential。其中
+#     · avahi-autoipd 在 DHCP 失败时给网卡塞 169.254 链路本地地址（if-up.d 钩子）
+#     · unattended-upgrades 后台升级并重启 dnsmasq/网络服务
+#   两者都表现成「网口灯亮、下级设备拿不到 IP / 用几小时就掉」，官方 minimal 完全没有。
+#   CI 已加硬断言：镜像文件名必须含 _minimal，且上述包不得出现在镜像 dpkg 状态里。
+
 BOOTBRANCH_BOARD="tag:v2024.04"
 BOOTPATCHDIR="v2024.04"
 BOOTCONFIG="nanopi-r5s-rk3568_defconfig"
@@ -95,6 +125,40 @@ function post_family_config__uboot_config() {
 	display_alert "$BOARD" "u-boot ${BOOTBRANCH_BOARD} overrides" "info"
 	BOOTDELAY=2 # Wait for UART interrupt to enter UMS/RockUSB mode etc
 	UBOOT_TARGET_MAP="ROCKCHIP_TPL=${RKBIN_DIR}/${DDR_BLOB} BL31=$RKBIN_DIR/$BL31_BLOB spl/u-boot-spl u-boot.bin flash.bin;;idbloader.img u-boot.itb"
+}
+
+##iNextOS ── 对齐官方发布件：钉住本板 DTB + smartmontools「包在、不启用」─────
+# ① hold dtb：官方 easepi-r1.csc / easepi-r2.csc 都有同名钩子
+#      chroot_sdcard apt-mark hold linux-dtb-vendor-rk35xx
+#    本板 BRANCH=current ⇒ 包名 = linux-dtb-current-rockchip64（LINUXFAMILY=rockchip64）。
+#    作用：armbian-upgrade 不会把本板 DTB 删掉/换掉（换掉＝口序与时序全丢）。
+function post_family_tweaks__nanopir5s_hold_dtb() {
+	display_alert "$BOARD" "Prevent armbian-upgrade from removing our dtb" "info"
+	chroot_sdcard apt-mark hold linux-dtb-current-rockchip64 || true
+	return 0
+}
+
+# ② smartmontools：官方 R1 发布件实测「/usr/lib/systemd/system/smartmontools.service 存在，
+#    但 multi-user.target.wants 里没有它的启用链接」（官方 wants 共 30 个）。
+#    我们的镜像因 Debian trixie 的 preset（smartmontools: enabled）在构建期自动生成了链接，
+#    结果每次开机必 failed —— SD/eMMC 不支持 SMART，smartd 退出码 17「No devices to monitor」，
+#    systemctl --failed 长期挂一个红。
+#    修法＝**只删启用链接、保留包**（官方 R1 同样发行这个包，卸载才是自造差异）。
+#    不用 systemctl disable：chroot 里它未必改得动镜像内链接（lyw-OS 已踩）。
+function post_family_tweaks__nanopir5s_disable_smartmontools() {
+	display_alert "$BOARD" "Align smartmontools with official R1 (package present, NOT enabled)" "info"
+	rm -f "${SDCARD}/etc/systemd/system/multi-user.target.wants/smartmontools.service"
+	rm -f "${SDCARD}/etc/systemd/system/smartd.service"
+	# 自证 1：链接必须已消失（删不掉就构建失败，别让偏差溜进镜像）
+	if [ -e "${SDCARD}/etc/systemd/system/multi-user.target.wants/smartmontools.service" ] ||
+	   [ -L "${SDCARD}/etc/systemd/system/multi-user.target.wants/smartmontools.service" ]; then
+		exit_with_error "smartmontools enable link still present in image (official R1: package ships, NOT enabled)"
+	fi
+	# 自证 2：包本身必须还在 —— 官方 R1 同样发行它
+	if ! grep -q "^Package: smartmontools$" "${SDCARD}/var/lib/dpkg/status" 2>/dev/null; then
+		exit_with_error "smartmontools package missing; official R1 ships it — disable only, do NOT uninstall"
+	fi
+	return 0
 }
 
 ##iNextOS ── 网口身份钉定（替换上游的 wan1/lan1/lan2 命名；其余原样）──────────

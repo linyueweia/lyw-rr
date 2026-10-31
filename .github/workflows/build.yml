@@ -23,6 +23,12 @@ on:
   schedule:
     - cron: '0 19 * * *'   # 每日 03:00 CST 检查上游更新（仅当上游变更时才构建）
 
+# 同一 ref 只允许一发在跑：手动 dispatch 两次会并行烧掉两轮 90 分钟
+# （concurrency 只对新 run 生效，补它之前已在跑的那发要手动 cancel）。
+concurrency:
+  group: lyw-rr-image-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   upstream:
     name: Check upstream framework (armbian-easepi)
@@ -38,8 +44,9 @@ jobs:
         id: cmp
         run: |
           set -eu
-          UP=$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" \
-            -H "Accept: application/vnd.github+json" \
+          # 公开仓库，读操作不需要 token（历史遗留的 `Authorization: Bearer …` 是脱敏残留，
+          # 会让后来人对着坏行猜；这里直接按匿名读取）。
+          UP=$(curl -fsSL -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/jjm2473/armbian-easepi/branches/easepi-v26.02" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')
           OLD=$(cat last-upstream-sha 2>/dev/null | tr -d '\n' || echo none)
@@ -115,6 +122,18 @@ jobs:
           if grep -qE 'NAME:="(wan1|lan1|lan2)"' build/config/boards/nanopi-r5s.csc; then
             echo "!! csc 里仍残留上游 wan1/lan1/lan2 命名"; exit 1
           fi
+          # ── 官方口径（2026-10-30 对齐定案，逐条对应一处真实偏差）────────────
+          grep -qF 'declare -g RELEASE="trixie"' build/config/boards/nanopi-r5s.csc \
+            || { echo '!! csc 没钉死 RELEASE（框架没有板级默认，本地构建会停在交互选择）'; exit 1; }
+          grep -qF 'FULL_DESKTOP="no"' build/config/boards/nanopi-r5s.csc \
+            || { echo '!! csc 的 FULL_DESKTOP 不是 no（NAS CLI 镜像不该带桌面包/桌面 logo）'; exit 1; }
+          if grep -qE '^BOOT_LOGO=' build/config/boards/nanopi-r5s.csc; then
+            echo "!! csc 仍设了 BOOT_LOGO（CLI 镜像不要桌面 logo）"; exit 1
+          fi
+          grep -qF 'apt-mark hold linux-dtb-current-rockchip64' build/config/boards/nanopi-r5s.csc \
+            || { echo '!! csc 没有 hold 本板 DTB（官方 R1/R2 都有这一步）'; exit 1; }
+          grep -qF 'post_family_tweaks__nanopir5s_disable_smartmontools' build/config/boards/nanopi-r5s.csc \
+            || { echo '!! csc 缺 smartmontools 对齐钩子（官方：包在、不启用）'; exit 1; }
           echo "csc 注入自检全部通过"
 
           # ── LED 触发器修正（2026-10-17 实机定案）─────────────────────────
@@ -279,12 +298,15 @@ jobs:
             EXTS="istorenext"
           fi
           echo "ENABLE_EXTENSIONS=$EXTS"
+          # BUILD_MINIMAL=yes = 官方发布件口径（文件名带 _minimal、718 包）。
+          # 传 no 会装整份 packages.additional（avahi-autoipd/unattended-upgrades/…），
+          # 实测 958 包，并把"DHCP 失败塞 169.254 / 后台自动升级"带进产物。
           ./compile.sh build \
             BOARD=nanopi-r5s \
             BRANCH=current \
             RELEASE=trixie \
             ENABLE_EXTENSIONS="$EXTS" \
-            BUILD_MINIMAL=no \
+            BUILD_MINIMAL=yes \
             BUILD_DESKTOP=no \
             KERNEL_CONFIGURE=no \
             COMPRESS_OUTPUTIMAGE="sha,img,xz" \

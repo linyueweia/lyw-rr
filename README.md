@@ -47,6 +47,8 @@
 | EEE/LPI | **不关闭**（官方默认开启）| 2026-10-13 曾按"同族三线"判为 EEE 唤醒时序问题并做了五层关闭；2026-10-17 在 T68M 主路由按日志复核推翻（EEE 本是关闭态而掉线仍发生，141 次掉线均伴随对端重启）→ 本仓改为与官方一致：镜像里不得有 EEE 关闭件，CI 反向断言 |
 | roceos 角色归一（`roceos.db` 三张表）| **本仓适配** | 默认 `ROLE_MAP="wan1=eth0 lan1=eth1,eth2"`（1G 当 WAN，两个 2.5G 同属 LAN 桥）；**只在首启套用一次**，之后网页后台改的角色不会被覆盖；脚本只修名字漂移 + 把孤儿口并入 LAN 桥 |
 | 网络栈（`NETWORKING_STACK="none"`）| **官方值**（对齐官方 iNextOS / EasePi R1）| 官方 R1 实测 dpkg 里没有 network-manager；装了 NM 会把 LAN 桥端口当独立网卡跑 DHCP，45s 超时后把 ethN 摘出 br-lan1（本板 2026-10-17 实机：eth1 被摘 → SSH 失联）|
+| 发布件口径（`BUILD_MINIMAL=yes` / `RELEASE=trixie` / `FULL_DESKTOP=no` / hold dtb）| **对齐官方**（2026-10-30 定案）| 官方 R5S 参照件就是 `iNextOSA_26.2.1_Nanopi-r5s_trixie_current_6.18.10_minimal.img`。`BUILD_MINIMAL=no` 会装整份 `packages.additional`（实测 958 包，含 `avahi-autoipd`/`unattended-upgrades`）；`RELEASE` 框架没有板级默认必须钉死；hold dtb 防 `armbian-upgrade` 换掉本板 DTB（官方 R1/R2 同款做法）|
+| smartmontools | **对齐官方 R1**：包在、但不启用 | 官方 R1 的 unit 存在，但 `multi-user.target.wants` 里没有链接；我们的镜像被 Debian preset 自动 enable → 每次开机 `smartd` 退 17「No devices to monitor」长期 failed。csc 只删启用链接、不卸载包（卸载才是自造差异）|
 | 风扇温控（pwm-fan overlay + 18C→45C 曲线）| **本仓适配**（主线 DTB 没有风扇支持）| `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso` 打开 pwm0 + 挂 pwm-fan；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，5s 采样、32 档，≤18C 停、45C 满速。**注意：overlay 必须同时登记进框架 overlay 的 Makefile**（`tools/overlay-makefile-patch.py`）—— 框架是显式枚举 dtbo 的，只拷 .dtso 不会编译，风扇就没有 cooling device |
 
 ## 两档构建 profile
@@ -57,6 +59,19 @@
 | `official` | **一行都不改**：上游自带 `nanopi-r5s.csc` + 仅 `istorenext` | 权威对照基线（证明官方组合在本板能否构建、结构如何）|
 
 触发：Actions → *Build iNextOS for NanoPi R5S* → Run workflow → 选 profile。
+
+本地构建（参数必须与 CI 完全一致，否则产物不是同一件东西；`.csc` 注释里有同一份）：
+
+```bash
+./compile.sh build BOARD=nanopi-r5s BRANCH=current RELEASE=trixie \
+  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan" \
+  BUILD_MINIMAL=yes BUILD_DESKTOP=no KERNEL_CONFIGURE=no EXPERT=yes
+```
+
+`BUILD_MINIMAL=yes` 是官方口径：官方 R5S 参照件 `iNextOSA_26.2.1_Nanopi-r5s_trixie_current_6.18.10_minimal.img`
+就带 `_minimal` 后缀（框架只在 yes 时加）、718 包；传 `no` 实测 958 包，多出的
+`avahi-autoipd`（DHCP 失败塞 169.254）与 `unattended-upgrades`（后台升级重启网络）正是
+「网口灯亮、下级设备拿不到 IP / 用几小时就掉」的常见来源。
 
 ## 判据
 
@@ -70,6 +85,10 @@
   （`tools/tests/role-map-check-test.sh`）。构建后再用同一份判据对镜像里那份 `ROLE_MAP` 判一遍。
 - **构建后**：`tools/verify-image.sh <img> <profile>` 逐项断言（本仓"判据即代码"），要点：
   - 产物 `.sha` 必须在且与实算 sha256 一致（写卡前靠它跟 CI 日志对账）；
+  - **官方发布件口径**：镜像文件名必须含 `_minimal`（=`BUILD_MINIMAL=yes` 真生效）、
+    `packages.additional` 整份黑名单（`avahi-autoipd`/`unattended-upgrades`/`vnstat`/`iperf3`/
+    `plymouth`/`dkms`/`rng-tools-debian`/`build-essential` 一个都不许在）、
+    `smartmontools` 包在但不启用（官方 R1 同款）；根文件系统按 `-o ro` 挂载，保证盘上镜像与上传的 `.xz` 同源；
   - bootfs `armbianEnv.txt` 指向 `rk3568-nanopi-r5s.dtb`，DTB 的 `model`/`compatible` 是 R5S，
     `ethernet@fe2a0000` + 三个 PCIe 控制器都 `okay`；
   - 内核 config：`STMMAC_ETH=m`、`R8169=m`、`BLK_DEV_NVME=y`、`LEDS_GPIO=y`、`PCIE_DW_PLAT_HOST=y`、`PCI_MSI=y`；
