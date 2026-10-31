@@ -35,6 +35,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 BASE = "http://update.roceos.com:14380"
@@ -63,10 +64,22 @@ def sha256_file(p):
     return h.hexdigest()
 
 
-def http_get(url, timeout=120):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+def http_get(url, timeout=60, attempts=4):
+    """单次超时不判死：runner 到 update.roceos.com:14380 会有瞬时不可达（实测同一 job 内
+    上一步刚成功、下一步 120s 连接超时），必须重试。"""
+    last = None
+    for i in range(1, attempts + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+            print("  …查询失败（第 %d/%d 次）：%s" % (i, attempts, e), file=sys.stderr)
+            if i < attempts:
+                time.sleep(2 * i)
+    print("!! 官方更新接口连续 %d 次不可达：%s" % (attempts, last), file=sys.stderr)
+    raise SystemExit(2)   # 与文档/ workflow 的 rc=2「输入/网络/校验失败」一致
 
 
 def download(url, dest, timeout=900, chunk=1 << 20, attempts=3):

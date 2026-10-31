@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -38,11 +39,22 @@ def pinned_version(path):
     return m.group(1) if m else None
 
 
-def fetch_latest(base, cur, timeout=30):
+def fetch_latest(base, cur, timeout=30, attempts=4):
+    """单次超时不判死：runner 到 update.roceos.com:14380 有瞬时不可达（实测同 job 内上一步刚
+    查询成功、下一步连接 120s 超时），必须重试；全部失败才把 rc=2 交给调用方。"""
     url = "%s/api/v1/updates/check?version=%s&channel=%s&arch=%s" % (base, cur, CHANNEL, ARCH)
-    req = urllib.request.Request(url, headers={"User-Agent": "lyw-ci/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return url, json.loads(r.read().decode("utf-8"))
+    last = None
+    for i in range(1, attempts + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": "lyw-ci/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return url, json.loads(r.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+            last = e
+            print("  …查询失败（第 %d/%d 次）：%s" % (i, attempts, e), file=sys.stderr)
+            if i < attempts:
+                time.sleep(2 * i)
+    raise last
 
 
 def main(argv=None):
