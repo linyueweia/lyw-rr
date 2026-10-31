@@ -94,6 +94,38 @@
 `avahi-autoipd`（DHCP 失败塞 169.254）与 `unattended-upgrades`（后台升级重启网络）正是
 「网口灯亮、下级设备拿不到 IP / 用几小时就掉」的常见来源。
 
+## 包集合口径（与官方 minimal 逐包对齐，2026-10-31 定案）
+
+**结论**：本仓镜像的 dpkg 包集合 = 框架官方 minimal 口径；本仓的扩展**不额外加任何包**。
+
+判据单点：`tools/packages-parity-check.py`（`--selftest` 跑 3 正例 + 6 负例 + 1 聚合口径自测）。
+
+- 旧判据把 `packages.additional` 整份当黑名单，只要成员出现在镜像里就判红 →
+  **`BUILD_MINIMAL=yes` 明明生效，仍然打出 15 条红**（lyw-rr run #39 / lyw-hh run #26），
+  整轮 2 小时白跑。错的不是包，是判据。
+- `packages.additional` 的成员有四个「官方 minimal 镜像里同样存在」的合法来源：
+  1. 框架自己的 rootfs 清单（**三层聚合**：`config/cli/<rel>/main/packages` +
+     `config/optional/_any_board/_config/…` + `config/optional/architectures/<arch>/_config/…`）
+     —— `sudo` `wget` `bash-completion` `htop` `wireless-regdb`，**以及只写在
+     arm64 optional 层的 `gpiod`**（只看 `config/cli/…` 会把它误判成「多出来的包」）；
+  2. `extensions/istorenext.sh` 的 `add_packages_to_image` —— `git` `unzip` `ntfs-3g`
+     `nfs-common` `smartmontools`；
+  3. 上面两者的 Depends/Recommends 传递依赖 —— `keyboard-configuration ← console-setup`、
+     `libpam-systemd ← systemd-sysv ← init`、`iptables ← wireguard-tools`、
+     `apt-utils ← debconf ← iproute2`；
+  4. apt 的 `Auto-Installed` 记录（镜像里 `/var/lib/apt/extended_states` 在时）。
+- 现判据 = **来源减法**：只有「出现 ∩ 不属于以上四类」的成员才判红 ——
+  `BUILD_MINIMAL=no`（整份 additional 进镜像）或有人手工装 additional 包时立刻红。
+  实测：用真实镜像同口径数据跑，上述 15 项全部有来源、判据绿；再造「整份装进来」负例，判据红。
+- 另一个真实偏差已修：`extensions/*-roceos.sh` 原先在构建期
+  `apt-get install python3-flask …`，会把这 6 个包连同依赖写进镜像 dpkg ——
+  官方 minimal 里没有它们（官方是 roceos 首启按 `required-packages.json` 现装）。
+  现在改为**只从载荷拷 `dist-packages`**（不进 dpkg），包集合与官方一致。
+- 与官方 csc 的对齐（2026-10-31）：`FULL_DESKTOP`/`BOOT_LOGO` 恢复官方同值
+  （前者是框架废弃变量，`lib/` 全仓无读取者；后者只在 `BUILD_DESKTOP=yes` 时生效，
+  见 `distro-agnostic.sh:591`），桌面仍由 CI 的 `BUILD_DESKTOP=no` 关掉 —— 产物不变，
+  csc 不再自造差异。
+
 ## 判据
 
 ### 构建期（CI 自动，失败即不出镜像）
@@ -107,9 +139,9 @@
 - **构建后**：`tools/verify-image.sh <img> <profile>` 逐项断言（本仓"判据即代码"），要点：
   - 产物 `.sha` 必须在且与实算 sha256 一致（写卡前靠它跟 CI 日志对账）；
   - **官方发布件口径**：镜像文件名必须含 `_minimal`（=`BUILD_MINIMAL=yes` 真生效）、
-    `packages.additional` 整份黑名单（`avahi-autoipd`/`unattended-upgrades`/`vnstat`/`iperf3`/
-    `plymouth`/`dkms`/`rng-tools-debian`/`build-essential` 一个都不许在）、
-    `smartmontools` 包在但不启用（官方 R1 同款）；根文件系统按 `-o ro` 挂载，保证盘上镜像与上传的 `.xz` 同源；
+    `packages.additional` 逐包核对（判据单点 `tools/packages-parity-check.py`，来源减法，
+    见上面「包集合口径」一节 —— 不是「出现即红」）、`smartmontools` 包在但不启用（官方 R1 同款）；
+    根文件系统按 `-o ro` 挂载，保证盘上镜像与上传的 `.xz` 同源；
   - bootfs `armbianEnv.txt` 指向 `rk3568-nanopi-r5s.dtb`，DTB 的 `model`/`compatible` 是 R5S，
     `ethernet@fe2a0000` + 三个 PCIe 控制器都 `okay`；
   - 内核 config：`STMMAC_ETH=m`、`R8169=m`、`BLK_DEV_NVME=y`、`LEDS_GPIO=y`、`PCIE_DW_PLAT_HOST=y`、`PCI_MSI=y`；

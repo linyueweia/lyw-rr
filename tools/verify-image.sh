@@ -43,6 +43,38 @@ bad()  { echo "  !!   $*"; FAIL=1; }
 warn() { echo "  WARN $*"; }           # 非致命提示（不影响退出码）
 info() { echo "       $*"; }
 
+# 包集合口径：判据单点在 tools/packages-parity-check.py（本函数只负责拼参数与判 red/green）。
+# 为什么不在这里逐包 grep：packages.additional 的成员有四个【官方 minimal 也有】的合法来源
+# （框架三层 base 清单 / istorenext 的 add_packages_to_image / 依赖传递 / apt auto），
+# 「出现即红」会在 BUILD_MINIMAL=yes 生效时照样打出 15 条假红（2026-10-31 run #39）。
+packages_parity_check() {   # $1 = 已挂载的 rootfs
+	local _root="$1" _out _rc _f
+	local -a _args=(--root "$_root" --release "${RELEASE:-trixie}" --arch arm64 --trace)
+	if [ -n "${BUILD_TREE:-}" ] && [ -d "${BUILD_TREE}/config/cli" ]; then
+		_args+=(--build-tree "$BUILD_TREE")
+	elif [ -n "${PACKAGES_ADDITIONAL_FILE:-}" ] && [ -f "${PACKAGES_ADDITIONAL_FILE}" ]; then
+		warn "未提供 BUILD_TREE，退化为显式清单（缺 config/optional 层会误判，别长期这么跑）"
+		_args+=(--additional "$PACKAGES_ADDITIONAL_FILE")
+		if [ -n "${PACKAGES_BASE_FILE:-}" ] && [ -f "${PACKAGES_BASE_FILE}" ]; then
+			_args+=(--base "$PACKAGES_BASE_FILE")
+		fi
+	else
+		bad "包集合口径无法核对：既没有 BUILD_TREE 也没有 PACKAGES_ADDITIONAL_FILE（不给假绿）"
+		return
+	fi
+	for _f in ${PACKAGES_EXTENSION_FILES:-}; do
+		[ -f "$_f" ] && _args+=(--extension "$_f")
+	done
+	_out="$(python3 "$RROOT/packages-parity-check.py" "${_args[@]}" 2>&1)"; _rc=$?
+	printf '%s\n' "$_out"
+	case "$_rc" in
+		0) ;;
+		1) bad "包集合与官方 minimal 口径不一致（上面列出的包没有任何合法来源）" ;;
+		*) bad "包集合判据输入缺失/不可解析（rc=${_rc}）—— 不给假绿" ;;
+	esac
+	return 0
+}
+
 # 在目标 rootfs 里找某 unit 的 enable 链接（任意 *.wants/）：
 #   WantedBy 由 unit 自己决定 —— fix-ifaces-name → sysinit.target、
 #   istorenext-init-network → networking.service、本仓自制服务 → multi-user/timers.target
@@ -166,22 +198,10 @@ if [ -e /mnt/ir/var/lib/dpkg/status ]; then
 	done
 	# ③ smartmontools 的两条断言放在 adapted 段（见下）：它是本仓 csc 钩子删的链接，
 	#    official 对照档（纯上游）本来就不修，用 adapted 判据去判它只会得到无意义的红。
-	# ④ 包集合全量核对：拿框架自己的 packages.additional 原文（单一真源，CI 传入）逐包
-	#    断言不得进镜像 —— 这样上游往清单里加包也自动覆盖，不用在这里抄第二份名单。
-	if [ -n "${PACKAGES_ADDITIONAL_FILE:-}" ] && [ -f "$PACKAGES_ADDITIONAL_FILE" ]; then
-		_n=0; _hit=0
-		while IFS= read -r _p; do
-			case "$_p" in ''|'#'*) continue ;; esac
-			_n=$((_n + 1))
-			if grep -q "^Package: ${_p}$" /mnt/ir/var/lib/dpkg/status 2>/dev/null; then
-				bad "packages.additional 成员进了镜像: ${_p}（BUILD_MINIMAL 应为 yes）"
-				_hit=$((_hit + 1))
-			fi
-		done < "$PACKAGES_ADDITIONAL_FILE"
-		[ "$_hit" = 0 ] && ok "packages.additional 全量 ${_n} 个包一个都没进镜像（与官方 minimal 同口径）"
-	else
-		warn "未提供 packages.additional 原文（PACKAGES_ADDITIONAL_FILE），只跑了 8 个关键包的黑名单"
-	fi
+	# ④ 包集合全量核对 —— 判据单点在 tools/packages-parity-check.py（来源减法，不抄第二份名单）：
+	#    违规 = 出现 ∩ ¬框架 base 清单三层聚合 ∩ ¬扩展 add_packages_to_image ∩ ¬依赖闭包 ∩ ¬apt auto
+	#    上游往清单里加包、或往 config/optional/architectures 里加包都自动覆盖。
+	packages_parity_check /mnt/ir
 else
 	bad "rootfs 里找不到 /var/lib/dpkg/status（无法核对包集合口径）"
 fi

@@ -7,7 +7,7 @@
 # 改动处全部用 ##iNextOS 标注，便于以后与上游 diff 合并：
 #   ① 网口命名与角色（上游 wan1/lan1/lan2 → iNextOS eth0..eth2 + eth_order）
 #   ② RELEASE 钉死（框架无板级默认，不钉会停在交互选择）
-#   ③ FULL_DESKTOP=no（与 CI 的 BUILD_DESKTOP=no 同口径，产物无桌面残留）
+#   ③ 桌面开关保持官方 csc 同值（FULL_DESKTOP/BOOT_LOGO）；桌面由 CI 的 BUILD_DESKTOP=no 关掉
 #   ④ hold dtb + smartmontools 只删启用链接（对齐官方发布件，见对应钩子注释）
 #
 # 为什么必须改（证据，不是推测）：
@@ -75,10 +75,12 @@ BOOT_FDT_FILE="rockchip/rk3568-nanopi-r5s.dtb"
 SRC_EXTLINUX="no"
 ASOUND_STATE="asound.state.station-m2" # TODO verify me
 IMAGE_PARTITION_TABLE="gpt"
-# NAS CLI 镜像（CI 固定 BUILD_DESKTOP=no）：不要桌面包、不要桌面 logo。
-# 官方发布件的 FULL_DESKTOP 写法是 yes，但官方产出的也是 CLI 镜像 —— 所以本仓的
-# 「官方口径」= 与官方产物一致（无桌面），不是照抄上游 csc 的默认值。
-FULL_DESKTOP="no"
+# 桌面开关：与官方 csc 同值（FULL_DESKTOP 是框架的废弃变量，全仓无读取者；
+# BOOT_LOGO 仅在 BUILD_DESKTOP=yes 时生效，见 distro-agnostic.sh:591）。
+# 官方发布件同样是「csc 写 yes + CI 传 BUILD_DESKTOP=no」⇒ CLI 产物；本仓照抄，
+# 不在 csc 里改这两个值（改了=自造差异，且与官方产物一模一样）。
+FULL_DESKTOP="yes"
+BOOT_LOGO="desktop"
 
 # ── 网络栈：不装 NetworkManager（对齐官方 iNextOS 设备 / 与 lyw-OS 同一条）──
 # 权威依据：官方 EasePi R1 镜像实测（lyw-OS 的 csc 里已记录）—— dpkg 里根本没有

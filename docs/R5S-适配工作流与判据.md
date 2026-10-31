@@ -93,3 +93,16 @@ sudo dd if=/dev/sdX bs=4M count=$(( $(stat -c%s output/images/*.img) / 4194304 +
   混在一轮里出问题时无法归因。
 - 任何 DTB/板级配置改动都必须带**同版本的回归断言**（本仓断言写在 `tools/verify-image.sh`，改动同 PR 提交）。
 - 未上板的结论一律标注"未验证"，并在上板后把实测输出补进本文件的判据表。
+
+## 6. 包集合口径（2026-10-31 定案：与官方 minimal 逐包对齐）
+
+- 判据单点 = `tools/packages-parity-check.py`；`verify-image.sh` 只负责调它。
+- 旧写法（把 `packages.additional` 整份当黑名单、成员出现即红）在 run #39 打出 15 条假红，
+  整轮 117 分钟白跑 —— 那 15 个包在官方 minimal 里本来就都有，来源是：
+  框架三层 base 清单（含只在 `config/optional/architectures/arm64/.../packages` 里的 `gpiod`）、
+  `istorenext.sh` 的 `add_packages_to_image`、两者的 Depends/Recommends 传递、apt `Auto-Installed`。
+- 现判据 = 来源减法；只有「没有任何来源」的 additional 成员才红（= `BUILD_MINIMAL` 没生效，
+  或有人手工装了 additional 包）。
+- 同时去掉了一处真实偏差：`lyw-rr-roceos.sh` 不再在构建期 `apt-get install python3-flask …`
+  （官方 minimal 没这些包，官方靠 roceos 首启装），改为只拷载荷 `dist-packages`。
+- 自测：`python3 tools/packages-parity-check.py --selftest`（3 正例 + 6 负例 + 1 聚合口径）。
