@@ -136,6 +136,28 @@ jobs:
             || { echo '!! csc 缺 smartmontools 对齐钩子（官方：包在、不启用）'; exit 1; }
           echo "csc 注入自检全部通过"
 
+          # ── 板级 DTS 注入（唯一改动 = 千兆 PHY 节点 eee-broken-1000t）──────────
+          # 框架的 dts-directories 会把 dt/ 里的 .dts 裸拷进内核树、覆盖同名文件
+          # （内核树里本来就有这个板的 DTS 与 Makefile 条目，所以不用改 Makefile）。
+          # 不注入 ⇒ 镜像里那颗 DTB 仍是上游默认（1000T EEE 开着）：症状是 carrier 仍 up、
+          # 协商仍 1000M、错误计数不涨，但整口静默收不到包，下级设备 30s 后自分配 169.254。
+          mkdir -p build/patch/kernel/archive/rockchip64-6.18/dt
+          cp -v rr/patch/kernel/archive/rockchip64-6.18/dt/rk3568-nanopi-r5s.dts \
+                build/patch/kernel/archive/rockchip64-6.18/dt/
+          python3 - <<'PY'
+          import sys
+          p = "build/patch/kernel/archive/rockchip64-6.18/dt/rk3568-nanopi-r5s.dts"
+          src = open(p, encoding="utf-8").read()
+          i = src.find("ethernet-phy@1 {")
+          if i < 0:
+              sys.exit("!! 板级 DTS 里找不到 ethernet-phy@1 节点（千兆 PHY）")
+          j = src.find("};", i)
+          blk = src[i:j]
+          if "eee-broken-1000t" not in blk:
+              sys.exit("!! eee-broken-1000t 不在 ethernet-phy@1 节点内（写错位置等于没写）")
+          print("     ✅ 千兆 PHY 节点含 eee-broken-1000t（1G EEE 关闭、100M 不动）")
+          PY
+
           # ── LED 触发器修正（2026-10-17 实机定案）─────────────────────────
           # 上游 overlay 把第二块 RTL8125 写成 r8169-1-100:00:link，但它在 PCI domain 0001
           # （0001:11:00.0），内核实际名字是 r8169-1-1100:00 → 触发器永不绑定 → LAN-2 灯一直灭。
@@ -216,6 +238,17 @@ jobs:
         run: |
           set -e
           bash rr/tools/tests/overlay-makefile-patch-test.sh
+
+      # ── 板级 DTS 语法门（秒级；dtc 只在 make dtbs 才报，代价是整轮构建 3400+ 秒）──
+      # 覆盖：括号/尖括号配平、属性值形态（CPP `<<`/`>>` 按运算符处理）、
+      #       **属性写在子节点之后**（dtc: Properties must precede subnodes）。
+      # 负例已验：`= 100>;` 报形态非法 + 多余的 >；子节点后再写属性报 prop-order。
+      - name: Lint board DTS syntax (adapted)
+        if: github.event.inputs.profile != 'official'
+        run: |
+          set -e
+          python3 rr/tools/dts-lint.py \
+            rr/patch/kernel/archive/rockchip64-6.18/dt/rk3568-nanopi-r5s.dts
 
       # ── 角色映射判据（秒级；把「最后一分钟才红」的那类事故提前到构建前）──────────
       # 2026-10-17 run #14：默认 ROLE_MAP 改了，镜像自证里还留着旧口径的字面量 →
@@ -336,4 +369,8 @@ jobs:
           IMG=$(ls build/output/images/*.img | head -n1)
           echo "IMG=$IMG"
           chmod +x rr/tools/verify-image.sh
+          # 包集合全量核对：把框架自己的 packages.additional 原文交给自证（单一真源），
+          # 逐包断言一个都没进镜像（BUILD_MINIMAL=yes 的产物必须与官方 minimal 同口径）。
+          export PACKAGES_ADDITIONAL_FILE="$GITHUB_WORKSPACE/build/config/cli/trixie/main/packages.additional"
+          [ -f "$PACKAGES_ADDITIONAL_FILE" ] || { echo "!! 框架的 packages.additional 没找到: $PACKAGES_ADDITIONAL_FILE"; exit 1; }
           sudo -E bash rr/tools/verify-image.sh "$IMG" "$PROFILE"

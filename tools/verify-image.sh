@@ -166,6 +166,22 @@ if [ -e /mnt/ir/var/lib/dpkg/status ]; then
 	done
 	# ③ smartmontools 的两条断言放在 adapted 段（见下）：它是本仓 csc 钩子删的链接，
 	#    official 对照档（纯上游）本来就不修，用 adapted 判据去判它只会得到无意义的红。
+	# ④ 包集合全量核对：拿框架自己的 packages.additional 原文（单一真源，CI 传入）逐包
+	#    断言不得进镜像 —— 这样上游往清单里加包也自动覆盖，不用在这里抄第二份名单。
+	if [ -n "${PACKAGES_ADDITIONAL_FILE:-}" ] && [ -f "$PACKAGES_ADDITIONAL_FILE" ]; then
+		_n=0; _hit=0
+		while IFS= read -r _p; do
+			case "$_p" in ''|'#'*) continue ;; esac
+			_n=$((_n + 1))
+			if grep -q "^Package: ${_p}$" /mnt/ir/var/lib/dpkg/status 2>/dev/null; then
+				bad "packages.additional 成员进了镜像: ${_p}（BUILD_MINIMAL 应为 yes）"
+				_hit=$((_hit + 1))
+			fi
+		done < "$PACKAGES_ADDITIONAL_FILE"
+		[ "$_hit" = 0 ] && ok "packages.additional 全量 ${_n} 个包一个都没进镜像（与官方 minimal 同口径）"
+	else
+		warn "未提供 packages.additional 原文（PACKAGES_ADDITIONAL_FILE），只跑了 8 个关键包的黑名单"
+	fi
 else
 	bad "rootfs 里找不到 /var/lib/dpkg/status（无法核对包集合口径）"
 fi
@@ -244,6 +260,18 @@ if [ -n "$DTB" ]; then
 		esac
 	done
 	grep -q 'gpio-leds' /tmp/r5s.dts && ok "DTB 有 gpio-leds（板上四个 LED）" || bad "DTB 缺 gpio-leds"
+	# EEE：千兆口（唯一 1G 口）的 1000T EEE 必须由 DT 关掉 —— iNextOS 定案写法
+	# （PHY 节点 eee-broken-1000t，只关 1G、100M 不受影响；用户态脚本一律不要）。
+	# 判据用字节搜索属性名（DTB strtab 里唯一），不依赖 dtc 反解后的格式。
+	python3 - "$DTB" <<-'PYEOF'
+		import sys
+		d = open(sys.argv[1], 'rb').read()
+		n = d.count(b'eee-broken-1000t')
+		print('     eee-broken-1000t: %d 处' % n)
+		sys.exit(0 if n >= 1 else 1)
+	PYEOF
+	[ $? = 0 ] && ok "DTB 含 eee-broken-1000t（千兆口 1G EEE 已关，100M 不动）" \
+		|| bad "DTB 缺 eee-broken-1000t（千兆口 1000T EEE 未关 → 整口静默丢包、下级 DHCP 拿不到地址）"
 else
 	bad "镜像里找不到 rk3568-nanopi-r5s.dtb（搜索：$BOOTDIR/dtb 与 /rootfs/boot/dtb）"
 fi
@@ -355,7 +383,11 @@ if [ "$PROFILE" = "adapted" ]; then
 
 	echo
 	echo
-	echo "=== [适配层] EEE 保持官方默认（镜像里不得有 EEE 关闭件）"
+	echo "=== [适配层] EEE：DT 侧只关 1000T，禁止任何用户态 EEE 关闭件"
+	# 2026-10-30 定案：千兆口的 1G EEE 由板级 DTS 的 PHY 节点 eee-broken-1000t 关掉
+	# （与 K1/T68M 同一写法，phy-core.c 读属性 → 重协商时剔除 1000T）。
+	# 因此用户态脚本/服务一律不要：它们会在内核更新/重刷后与 DT 口径冲突，且没有
+	# phylib 语义（DTB 那条断言在 boot 段，见上）。
 	for f in usr/local/sbin/lyw-rr-eee-off.sh etc/systemd/system/lyw-rr-eee-off.service \
 		etc/NetworkManager/dispatcher.d/90-lyw-rr-eee-off etc/network/if-up.d/zz-lyw-rr-eee-off \
 		etc/systemd/system/lyw-rr-eee-off-watch.timer; do
