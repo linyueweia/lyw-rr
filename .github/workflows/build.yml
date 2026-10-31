@@ -42,11 +42,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compare upstream HEAD with recorded sha
         id: cmp
+        # 必须 authenticated：2026-10-31 hh#28 / rr 同类步骤都栽在匿名调用上 —— 共享 runner
+        # 的出口 IP 会被 api.github.com 限流到 403，本 job 红了会让 build（needs: upstream）
+        # 直接 skipped，镜像压根不开始编。token 用 env 传，不写进脚本文本。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          # 公开仓库，读操作不需要 token（历史遗留的 `Authorization: Bearer …` 是脱敏残留，
-          # 会让后来人对着坏行猜；这里直接按匿名读取）。
-          UP=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+          UP=$(curl -fsSL --retry 3 --retry-delay 2 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/repos/jjm2473/armbian-easepi/branches/easepi-v26.02" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"]["sha"])')
           OLD=$(cat last-upstream-sha 2>/dev/null | tr -d '\n' || echo none)
@@ -72,7 +77,8 @@ jobs:
   build:
     name: Build iNextOS image (NanoPi R5S / RK3568)
     needs: upstream
-    if: github.event_name != 'schedule' || needs.upstream.outputs.changed == 'true'
+    # always()：上游指纹检查自身失败（403 / 网络抖动）不应该把 push / dispatch 触发的构建一起吞掉。
+    if: always() && (github.event_name != 'schedule' || needs.upstream.outputs.changed == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
