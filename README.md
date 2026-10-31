@@ -117,10 +117,11 @@
 - 现判据 = **来源减法**：只有「出现 ∩ 不属于以上四类」的成员才判红 ——
   `BUILD_MINIMAL=no`（整份 additional 进镜像）或有人手工装 additional 包时立刻红。
   实测：用真实镜像同口径数据跑，上述 15 项全部有来源、判据绿；再造「整份装进来」负例，判据红。
-- 另一个真实偏差已修：`extensions/*-roceos.sh` 原先在构建期
-  `apt-get install python3-flask …`，会把这 6 个包连同依赖写进镜像 dpkg ——
-  官方 minimal 里没有它们（官方是 roceos 首启按 `required-packages.json` 现装）。
-  现在改为**只从载荷拷 `dist-packages`**（不进 dpkg），包集合与官方一致。
+- Flask 栈**保留**构建期 `apt-get install python3-flask …`（≈ 与官方同口径）：
+  2026-10-31 取官方 **A2 2.9.1** 镜像（sha256 `a8cdf1d2…`，716 包）实测，
+  官方里面确实装着 `python3-flask/-werkzeug/-jinja2/-itsdangerous/-markupsafe/-blinker`
+  这 6 个包 ⇒ 我们原先的写法是对的，不要为了"少几个包"去删它；
+  载荷里的 `dist-packages` 只作 apt 无 DNS 时的兜底。
 - 与官方 csc 的对齐（2026-10-31）：`FULL_DESKTOP`/`BOOT_LOGO` 恢复官方同值
   （前者是框架废弃变量，`lib/` 全仓无读取者；后者只在 `BUILD_DESKTOP=yes` 时生效，
   见 `distro-agnostic.sh:591`），桌面仍由 CI 的 `BUILD_DESKTOP=no` 关掉 —— 产物不变，

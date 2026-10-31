@@ -103,6 +103,7 @@ sudo dd if=/dev/sdX bs=4M count=$(( $(stat -c%s output/images/*.img) / 4194304 +
   `istorenext.sh` 的 `add_packages_to_image`、两者的 Depends/Recommends 传递、apt `Auto-Installed`。
 - 现判据 = 来源减法；只有「没有任何来源」的 additional 成员才红（= `BUILD_MINIMAL` 没生效，
   或有人手工装了 additional 包）。
-- 同时去掉了一处真实偏差：`lyw-rr-roceos.sh` 不再在构建期 `apt-get install python3-flask …`
-  （官方 minimal 没这些包，官方靠 roceos 首启装），改为只拷载荷 `dist-packages`。
+- Flask 栈保留构建期 `apt-get install python3-flask …`：官方 A2 2.9.1 镜像（716 包）里
+  确实装着这 6 个包（python3-flask/-werkzeug/-jinja2/-itsdangerous/-markupsafe/-blinker）
+  ⇒ 保留 = 与官方同口径；载荷 `dist-packages` 只作兜底。
 - 自测：`python3 tools/packages-parity-check.py --selftest`（3 正例 + 6 负例 + 1 聚合口径）。

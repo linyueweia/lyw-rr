@@ -63,21 +63,22 @@ function post_post_debootstrap_tweaks__lyw_rr_roceos() {
 	ln -sf /etc/nginx/sites-available/roceos.conf "${SDCARD}/etc/nginx/sites-enabled/roceos.conf"
 	rm -f "${SDCARD}/etc/nginx/sites-enabled/default"
 
-	# ── Flask 栈（roceos-ai 用）：只从载荷拷 dist-packages，【不在构建期 apt 装】──
-	# 为什么去掉 `apt-get install python3-flask …`（2026-10-31 包集合对齐定案）：
-	#   那会把 python3-flask / -werkzeug / -jinja2 / -itsdangerous / -markupsafe / -blinker
-	#   及一串依赖写进镜像的 dpkg 状态，而官方 minimal 镜像里【没有】这些包 ——
-	#   官方是 roceos 首启时按自己的 required-packages.json 现装的（技能 §5）。
-	#   直接拷载荷里的 dist-packages 不进 dpkg ⇒ 镜像包集合与官方一致；
-	#   roceos 首启装同名 apt 包时会正常覆盖（同版本、同架构）。
+	# ── Flask 栈（roceos-ai 用）：apt 优先，失败回退载荷内文件 ────
+	# 官方 A2 2.9.1 镜像（2026-10-31 实取，sha256 a8cdf1d2…）里【确实装着】
+	# python3-flask / -werkzeug / -jinja2 / -itsdangerous / -markupsafe / -blinker
+	# （716 包实测），所以构建期 apt 装这几个包 = 与官方同口径，不要删。
+	# 注意：chroot_sdcard 以 "$*" 拼串交给 bash -c，引号会被吃掉 —— 必须整条命令一个参数
+	chroot_sdcard apt-get install -y -qq python3-flask python3-werkzeug python3-jinja2 \
+		python3-itsdangerous python3-markupsafe python3-blinker || true
 	local flask_test="python3 -c 'import flask, werkzeug, jinja2, itsdangerous, markupsafe, blinker'"
 	local flask_out
 	if ! flask_out=$(chroot_sdcard "$flask_test" 2>&1); then
-		display_alert "Flask 栈用载荷自带 dist-packages（与官方一致：构建期不装 python3-flask）" "$EXTENSION" "info"
+		display_alert "Flask stack not importable (apt had no DNS): ${flask_out##*$'\n'}" "$EXTENSION" "warn"
 		mkdir -p "${SDCARD}/usr/lib/python3/dist-packages"
 		cp -a "${stage}/usr/lib/python3/dist-packages/." "${SDCARD}/usr/lib/python3/dist-packages/"
 		flask_out=$(chroot_sdcard "$flask_test" 2>&1) || \
 			exit_with_error "Flask stack still not importable after payload fallback: ${flask_out##*$'\n'}"
+		display_alert "Flask stack OK after payload fallback" "$EXTENSION" "info"
 	fi
 
 	rm -rf "$stage"
