@@ -380,6 +380,41 @@ if [ "$PROFILE" = "adapted" ]; then
 	[ -f /mnt/ir/etc/apt/preferences.d/10-inextos-firmware-conflict ] \
 		&& ok "apt pin 在位（更新流程无法卸载 armbian-firmware）" \
 		|| bad "缺 apt pin 文件"
+	# roceos-ai 语义 = 官方 Easepi-r2 版：无模型 exit 3 + RestartPreventExitStatus=3，
+	# 且不再 Wants=roceos.service（后者会让 OTA 停服换二进制期间提前拉起旧后端 → 升级假成功）。
+	AIU=/mnt/ir/etc/systemd/system/roceos-ai.service
+	if [ -f "$AIU" ]; then
+		grep -q '^RestartPreventExitStatus=3' "$AIU" \
+			&& ok "roceos-ai：无模型时退出 3 不被重启（官方语义）" \
+			|| bad "roceos-ai 缺 RestartPreventExitStatus=3（无模型时每 5 秒崩溃）"
+		grep -q '^Wants=roceos.service' "$AIU" \
+			&& bad "roceos-ai 仍 Wants=roceos.service（官方已移除：会让 OTA 假成功）" \
+			|| ok "roceos-ai 不 Wants 后端（与官方一致）"
+	else
+		bad "缺 roceos-ai.service"
+	fi
+	grep -q 'sys.exit(3)' /mnt/ir/opt/roceos-ai/server.py 2>/dev/null \
+		&& ok "server.py 为官方新版（无模型 exit 3）" \
+		|| bad "server.py 是旧版（无模型 exit 1 → 崩溃循环）"
+
+	echo
+	echo "=== [适配层] 时钟（本仓 mask：后台登录即退的根因）==="
+	if [ -e /mnt/ir/lib/systemd/system/fake-hwclock-load.service ] ||
+	   [ -e /mnt/ir/usr/lib/systemd/system/fake-hwclock-load.service ]; then
+		if [ -L /mnt/ir/etc/systemd/system/fake-hwclock-load.service ] &&
+		   [ "$(readlink /mnt/ir/etc/systemd/system/fake-hwclock-load.service)" = "/dev/null" ]; then
+			ok "fake-hwclock-load 已 mask（保住 RTC 作时间源）"
+		else
+			bad "fake-hwclock-load 未 mask（开机用构建日期覆盖 RTC → roceos JWT 立刻过期）"
+		fi
+	else
+		warn "镜像内没有 fake-hwclock-load.service（无需 mask）"
+	fi
+	if [ -s /mnt/ir/etc/fake-hwclock.data ]; then
+		ok "fake-hwclock.data = $(cat /mnt/ir/etc/fake-hwclock.data)"
+	else
+		bad "缺 /etc/fake-hwclock.data"
+	fi
 
 	echo
 	echo

@@ -61,7 +61,7 @@ python3 rr/tools/overlay-makefile-patch.py build/patch/kernel/archive
 
 cd build && ./compile.sh build \
   BOARD=nanopi-r5s BRANCH=current RELEASE=trixie \
-  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan" \
+  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan,lyw-rr-clock" \
   BUILD_MINIMAL=yes BUILD_DESKTOP=no KERNEL_CONFIGURE=no \
   COMPRESS_OUTPUTIMAGE="sha,img,xz" SHARE_LOG=yes EXPERT=yes
 ```

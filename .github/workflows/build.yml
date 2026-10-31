@@ -209,7 +209,7 @@ jobs:
           chmod +x build/userpatches/extensions/*.sh
           ls -l build/userpatches/extensions/
           # 框架只加载【可执行】的扩展；权限不对会被静默跳过（"Found 0 extensions"）
-          for fn in lyw_rr_roceos lyw_rr_net_roles lyw_rr_fan; do
+          for fn in lyw_rr_roceos lyw_rr_net_roles lyw_rr_fan lyw_rr_clock; do
             grep -rq "$fn" build/userpatches/extensions/ || { echo "!! 扩展函数缺失: $fn"; exit 1; }
           done
           grep -q 'custom_kernel_config__lyw_rr_board_symbols' \
@@ -326,7 +326,7 @@ jobs:
           cd build
           # 注释必须放在整条命令【之前】：放进 "\" 续行之间会把后续参数整段注释掉
           if [ "$PROFILE" = "adapted" ]; then
-            EXTS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan"
+            EXTS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan,lyw-rr-clock"
           else
             EXTS="istorenext"
           fi

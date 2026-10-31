@@ -96,10 +96,10 @@ FULL_DESKTOP="no"
 declare -g NETWORKING_STACK="none"
 
 # ── 扩展与本地构建（参数必须与 CI 完全一致，否则产物不是同一件东西）──────
-# CI 用 ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan"
+# CI 用 ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan,lyw-rr-clock"
 # 传入；本地构建不带就出一个没有 roceos 后台、没有口名/角色的镜像，且过程不报错：
 #   ./compile.sh build BOARD=nanopi-r5s BRANCH=current RELEASE=trixie \
-#     ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan" \
+#     ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan,lyw-rr-clock" \
 #     BUILD_MINIMAL=yes BUILD_DESKTOP=no KERNEL_CONFIGURE=no EXPERT=yes
 #
 # BUILD_MINIMAL=yes 是**官方口径**，不是性能选项（2026-10-30 对齐定案）：

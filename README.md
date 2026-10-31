@@ -49,6 +49,8 @@
 | 网络栈（`NETWORKING_STACK="none"`）| **官方值**（对齐官方 iNextOS / EasePi R1）| 官方 R1 实测 dpkg 里没有 network-manager；装了 NM 会把 LAN 桥端口当独立网卡跑 DHCP，45s 超时后把 ethN 摘出 br-lan1（本板 2026-10-17 实机：eth1 被摘 → SSH 失联）|
 | 发布件口径（`BUILD_MINIMAL=yes` / `RELEASE=trixie` / `FULL_DESKTOP=no` / hold dtb）| **对齐官方**（2026-10-30 定案）| 官方发布件名 `iNextOSA_26.2.1_Nanopi-r5s_trixie_current_6.18.10_minimal.img`（`_minimal` 后缀 = 框架只在 `BUILD_MINIMAL=yes` 时加）。**本机那份官方镜像是未下载完的空壳**，所以包数口径取自同族官方件实测：官方 minimal 718 包 / 我们 `BUILD_MINIMAL=no` 实测 958 包，差的正是整份 `packages.additional`（含 `avahi-autoipd`/`unattended-upgrades`）。`RELEASE` 框架没有板级默认必须钉死；hold dtb 防 `armbian-upgrade` 换掉本板 DTB（官方 R1/R2 同款做法）|
 | smartmontools | **对齐官方 R1**：包在、但不启用 | 官方 R1 的 unit 存在，但 `multi-user.target.wants` 里没有链接；我们的镜像被 Debian preset 自动 enable → 每次开机 `smartd` 退 17「No devices to monitor」长期 failed。csc 只删启用链接、不卸载包（卸载才是自造差异）|
+| roceos-ai 语义 | **对齐官方 Easepi-r2**：无模型 exit 3、不重启、不 Wants 后端 | 载荷 `roceos-ai.service` 带 `RestartPreventExitStatus=3`、`server.py` 无模型时 `sys.exit(3)`；`Wants=roceos.service` 已移除（留着会让 OTA 停服换二进制期间提前拉起旧后端 → 升级假成功）。CI 三条断言 |
+| 时钟（`fake-hwclock-load` mask）| **与官方有意差异**（有实机因果链）| 官方 R1 是 enabled；但 `fake-hwclock.data` 是构建日期，开机会盖掉 RTC → roceos 用本机时钟签 JWT，放置数周再开机就「登录一下即退出」（H88K 实机同源机制）。本仓 mask 该 unit + `.data` 写构建时刻 + 自带 timesyncd 就启用。**这是唯一一项与官方形态不同的地方**，可一条命令回滚（`systemctl unmask fake-hwclock-load`）|
 | 风扇温控（pwm-fan overlay + 18C→45C 曲线）| **本仓适配**（主线 DTB 没有风扇支持）| `config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso` 打开 pwm0 + 挂 pwm-fan；`extensions/lyw-rr-fan.sh` 装 `r5s-fan.service`，5s 采样、32 档，≤18C 停、45C 满速。**注意：overlay 必须同时登记进框架 overlay 的 Makefile**（`tools/overlay-makefile-patch.py`）—— 框架是显式枚举 dtbo 的，只拷 .dtso 不会编译，风扇就没有 cooling device |
 
 ## 两档构建 profile
@@ -64,7 +66,7 @@
 
 ```bash
 ./compile.sh build BOARD=nanopi-r5s BRANCH=current RELEASE=trixie \
-  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan" \
+  ENABLE_EXTENSIONS="istorenext,lyw-rr-roceos,lyw-rr-kernel-config,lyw-rr-net-roles,lyw-rr-fan,lyw-rr-clock" \
   BUILD_MINIMAL=yes BUILD_DESKTOP=no KERNEL_CONFIGURE=no EXPERT=yes
 ```
 
@@ -170,6 +172,7 @@ extensions/lyw-rr-kernel-config.sh  # 断言三口/NVMe/LED 的内核符号（�
 （EEE 关闭扩展已移除：1G EEE 由板级 DTS 的 `eee-broken-1000t` 关掉，不再需要用户态件）
 extensions/lyw-rr-net-roles.sh   # roceos 角色表归一（映射在 /etc/lyw-rr-net-roles.conf）
 extensions/lyw-rr-fan.sh         # 板载风扇温控（pwm-fan，18C 起转 / 45C 满速）
+extensions/lyw-rr-clock.sh       # mask fake-hwclock-load（后台登录即退的根因，与 lyw-hh 同一套）
 config/overlays/rockchip-rk3568-nanopi-r5s-fan.dtso  # 打开 pwm0 + 挂 pwm-fan 节点
 tools/verify-image.sh            # 镜像自证（判据即代码；adapted/official 两档）
 tools/role-map-check.py          # ROLE_MAP 口径判据（构建早期对仓库默认值 + 构建后对镜像里那份，同一份代码）
