@@ -13,6 +13,7 @@ version: 3.0.2
 channel: stable_arm（设备显示「稳定版」）
 arch: arm64
 payload: roceos-payload-v2
+payload_url: https://github.com/linyueweia/lyw-OS/releases/download/roceos-payload-v2/roceos-payload.tar.gz
 payload_sha256: cbd911c6fad5a3655bc52a39e4099b8812c70d8358840e1d1d8bf6db956703d1
 roceos_sha256: 8c96b9e7811d4369958cbda7b45289531a9076007e51aed7c671fe642d960cfe
 roceos_size: 76230504
