@@ -46,9 +46,11 @@ cp rr/config/boards/nanopi-r5s.csc           build/config/boards/
 mkdir -p build/userpatches/extensions build/userpatches/overlay
 cp rr/extensions/*.sh                        build/userpatches/extensions/
 chmod +x build/userpatches/extensions/*.sh
-curl -fL -o build/userpatches/overlay/roceos-payload.tar.gz \
-  https://github.com/linyueweia/lyw-rr/releases/download/roceos-payload-v2/roceos-payload.tar.gz
-echo "cbd911c6fad5a3655bc52a39e4099b8812c70d8358840e1d1d8bf6db956703d1  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
+# pin 取自 official-roceos.txt（唯一真源），别抄版本号/哈希
+URL=$(sed -n 's/^payload_url:[[:space:]]*//p' rr/official-roceos.txt | head -1)
+SHA=$(sed -n 's/^payload_sha256:[[:space:]]*//p' rr/official-roceos.txt | head -1)
+curl -fL --retry 3 -o build/userpatches/overlay/roceos-payload.tar.gz "$URL"
+echo "$SHA  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
 
 # overlay（LED 修正版 + 风扇）：拷进各内核分支的 overlay 目录，并且【必须登记进 Makefile】
 # —— 框架的 overlay Makefile 是显式枚举每个 dtbo 的，只拷 .dtso 不会编译（run #21 真因）
@@ -127,7 +129,12 @@ GET http://update.roceos.com:14380/api/v1/updates/check?version=<当前>&channel
 - 设备侧显示「稳定版」，`/opt/roceos/version.json` = `{"version":"3.0.2","channel":"稳定版"}`。
 - 快捷自查：`python3 tools/check-roceos.py --pinned official-roceos.txt`（rc=1 表示落后）。
 - CI：`.github/workflows/build.yml` 的 `roceos` job 每天 03:00 CST 跑同一个脚本并**自动跟版**
-  （重建载荷 → 发本仓 release → 改三处 pin → 推送）；落后不再只是红，除非跟版本身失败。
+  （重建载荷 → 发本仓 release → 改两处 pin → 推送）；落后不再只是红，除非跟版本身失败。
+  pin 只存两处：`official-roceos.txt`（真源）+ 扩展里的 `ROCEOS_PAYLOAD_SHA256`（构建期自证），
+  `build.yml` 运行时从 txt 读 URL/sha。**别再把 pin 写进 workflow**：`GITHUB_TOKEN` 是 GitHub App
+  token、没有 `workflows` 权限，改动一旦涉及 `.github/workflows/**`，push 会被硬拒
+  （`refusing to allow a GitHub App to create or update workflow … without workflows permission`），
+  表现为「载荷发好了、pin 改了、最后一步红了、pin 永远落不了地」（2026-11-02 跟 3.0.3 实录）。
 
 ### 重建载荷（两条路线，都验证过）
 

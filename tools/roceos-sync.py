@@ -3,7 +3,7 @@
 """roceos-sync.py —— 全自动跟官方 roceos（iNextOS 网页后台）版本（四仓各跑一份）。
 
 不依赖任何 secret，只用 job 自带的 GITHUB_TOKEN：下官方包 → 按官方安装映射重建本仓载荷 →
-打包算 sha → 交回 workflow 发 release / 改三处 pin / 触发整机构建。
+打包算 sha → 交回 workflow 发 release / 改两处 pin（workflow 只读 pin，不改它）/ 触发整机构建。
 
 官方渠道（2026-10-31 从 roceos 二进制里取的常量，不是文档抄录）：
     查版本  GET http://update.roceos.com:14380/api/v1/updates/check
@@ -23,7 +23,7 @@
     python3 tools/roceos-sync.py --repo lyw-rr                # 有新版本才动
     python3 tools/roceos-sync.py --repo lyw-rr --dry-run      # 只探测 + 下载校验
     python3 tools/roceos-sync.py --repo lyw-rr --force 3.0.2  # 强制按指定版本重建（测试）
-退出码：0 = 已是最新（未改动）；10 = 已重建并改好三处 pin；2 = 输入/网络/校验失败。
+退出码：0 = 已是最新（未改动）；10 = 已重建并改好两处 pin；2 = 输入/网络/校验失败。
 """
 
 import argparse
@@ -238,20 +238,38 @@ def verify_payload(path, expect_version, expect_roceos_sha=None, log=print):
 
 
 def patch_pins(repo_dir, repo, old_sha, new_sha, old_url, new_url, kv, txt, header, log=print):
+    """改两处 pin：扩展里的 ROCEOS_PAYLOAD_SHA256 + official-roceos.txt（唯一真源）。
+
+    为什么不改 .github/workflows/build.yml：GITHUB_TOKEN 是 GitHub App token，权限集合里
+    没有 workflows ⇒ 任何包含 workflow 文件的推送都会被硬拒
+      remote rejected: refusing to allow a GitHub App to create or update workflow
+      `.github/workflows/build.yml` without `workflows` permission
+    结果就是「载荷发好了、pin 也改了、push 红了、pin 永远落不了地」（2026-11-02 跟 3.0.3
+    实录，kk/OS 两仓同款）。workflow 现在运行时从本 txt 读 payload_url/payload_sha256。
+    """
     ext = os.path.join(repo_dir, REPO_META[repo])
     s = open(ext, encoding="utf-8", newline="").read()
     if old_sha not in s:
         raise SystemExit("!! %s 里找不到旧 sha %s" % (ext, old_sha[:16]))
+
+    # 反断言先做（在写任何文件之前，避免留下半成品）：workflow 里不许再出现任何载荷 URL。
+    # 有人把字面量加回来时立刻红在这里，而不是等到推送被 GitHub 拒（那一轮跟版全白跑）。
+    wf = os.path.join(repo_dir, ".github/workflows/build.yml")
+    ws = open(wf, encoding="utf-8", newline="").read()
+    hits = [i + 1 for i, l in enumerate(ws.splitlines())
+            if "releases/download/roceos-payload" in l or old_sha in l]
+    if hits:
+        raise SystemExit(
+            "!! %s 第 %s 行又写死了载荷 URL/sha —— workflow 不许存 pin"
+            "（GITHUB_TOKEN 无 workflows 权限，改了推不上去）。"
+            "请改成从 official-roceos.txt 读取（见 Fetch roceos payload 那一步）"
+            % (wf, ",".join(map(str, hits))))
+
     open(ext, "w", encoding="utf-8", newline="").write(s.replace(old_sha, new_sha))
 
-    wf = os.path.join(repo_dir, ".github/workflows/build.yml")
-    s = open(wf, encoding="utf-8", newline="").read()
-    if old_sha not in s or old_url not in s:
-        raise SystemExit("!! %s 里找不到旧 sha 或旧 URL（pin 漂移，先人工对齐）" % wf)
-    open(wf, "w", encoding="utf-8", newline="").write(s.replace(old_sha, new_sha).replace(old_url, new_url))
-
     write_kv(txt, kv, header)
-    log("  三处 pin 已更新：%s / build.yml / official-roceos.txt" % os.path.basename(ext))
+    log("  两处 pin 已更新：%s / official-roceos.txt（workflow 运行时读 txt，本身不含 pin）"
+        % os.path.basename(ext))
 
 
 # ────────────────────────── main ──────────────────────────
@@ -339,6 +357,8 @@ def main(argv=None):
     })
     header = [
         "# 本仓镜像内置的 roceos（iNextOS 网页后台）版本 —— 由 .github/workflows/build.yml 的 roceos job 自动维护。",
+        "# 本文件是载荷 pin 的唯一真源：workflow 构建时从这里读 payload_url/payload_sha256；",
+        "# 扩展里的 ROCEOS_PAYLOAD_SHA256 必须与之同值（CI 有断言）。",
         "# 查版本：GET " + BASE + "/api/v1/updates/check?version=<当前>&channel=stable_arm&arch=arm64",
         "# 取包：  GET " + BASE + "/api/v1/updates/packages/<filename>（sha256 由接口给，脚本会校验）",
         "# 重建：  python3 tools/roceos-sync.py --repo <本仓>（四仓各一份，只用 GITHUB_TOKEN）",
@@ -359,7 +379,7 @@ def main(argv=None):
         for k, v in (("NEW_VERSION", latest), ("NEW_TAG", new_tag), ("NEW_URL", new_url),
                      ("NEW_SHA", new_sha), ("ROCEOS_SHA", roceos_sha), ("PKG_FILENAME", fn)):
             f.write("%s=%s\n" % (k, v))
-    print("  已写好 %s 与三处 pin；产物留在 %s（由 workflow 上传）" % (os.path.basename(env), a.out))
+    print("  已写好 %s 与两处 pin；产物留在 %s（由 workflow 上传）" % (os.path.basename(env), a.out))
     return 10
 
 

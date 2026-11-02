@@ -122,11 +122,11 @@
   官方里面确实装着 `python3-flask/-werkzeug/-jinja2/-itsdangerous/-markupsafe/-blinker`
   这 6 个包 ⇒ 我们原先的写法是对的，不要为了"少几个包"去删它；
   载荷里的 `dist-packages` 只作 apt 无 DNS 时的兜底。
-- **roceos 版本口径（2026-10-31）**：镜像内置 roceos = 官方在线通道的最新版 **3.0.2**
+- **roceos 版本口径**：镜像内置 roceos = 官方在线通道的最新版（**版本号以 `official-roceos.txt` 为准**，文档不抄）
   （`channel=stable_arm`、`arch=arm64`，取自官方更新服务器 `update.roceos.com:14380` +
   在役实机 OTA 后的 `/opt/roceos`）。版本记录在 `official-roceos.txt`；
   由 `.github/workflows/build.yml` 的 `roceos` job 每天核对并**自动跟版**（重建载荷 + 发本仓
-  release + 改三处 pin + 推送；同一次 run 的 build 直接接着编）。
+  release + 改两处 pin（`official-roceos.txt` + 扩展常量） + 推送；同一次 run 的 build 直接接着编）。
   取件与打包步骤见 `docs/` 的「roceos 载荷怎么跟官方版本」。
 
 - 与官方 csc 的对齐（2026-10-31）：`FULL_DESKTOP`/`BOOT_LOGO` 恢复官方同值
@@ -140,7 +140,7 @@
 
 - **注入前**：csc 里三条 udev 规则 + `DEFAULT_INTERFACE=eth2` 必须在；上游 `wan1/lan1/lan2` 命名必须已不存在；
   四个扩展的钩子/载荷指纹必须在。
-- **roceos 载荷**：`roceos-payload-v2`，sha256 = `cbd911c6…39dd48` 校验（本仓 release）。
+- **roceos 载荷**：本仓 release `roceos-payload-<版本>`；URL/sha256 取自 `official-roceos.txt`（`build.yml` 运行时读，工作流里不存 pin —— GITHUB_TOKEN 没有 `workflows` 权限，存了就推不上去）。
 - **角色映射（构建前，秒级）**：`tools/role-map-check.py --src` 对扩展将要写进镜像的默认 `ROLE_MAP` 判口径
   （三口各一次 / 1G 当 WAN / 两个 2.5G 同桥），并拒绝「默认值被抄到别处第二份」；判据脚本自带 15 例负例自测
   （`tools/tests/role-map-check-test.sh`）。构建后再用同一份判据对镜像里那份 `ROLE_MAP` 判一遍。

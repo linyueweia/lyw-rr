@@ -12,7 +12,7 @@
 #   ① upstream：比对 jjm2473/armbian-easepi @ easepi-v26.02 的 HEAD 与 last-upstream-sha，
 #               变了就记录新指纹（GITHUB_TOKEN 推的提交不会触发新 run，不会递归）
 #   ② roceos  ：查官方 stable_arm/arm64 最新版 → 有新版本就重建本仓载荷、发本仓 release、
-#               改三处 pin 并推送。下游 build checkout 到**刚推的提交**，所以旧
+#               改两处 pin 并推送。下游 build checkout 到**刚推的提交**，所以旧
 #               sync-roceos.yml 里那句 `gh workflow run build.yml` 不再需要（同 run 内接上）。
 #   ③ dtb     ：只编板级 DTS 的 4 分钟快验。红了不开 90 分钟的整机；
 #               判据与镜像自证同一口径（OS 是 52 条 board-parity，其余仓是 dts-lint + DTB 字节断言）
@@ -117,9 +117,9 @@ jobs:
 
   # ── ② roceos 跟版（跟官方在线升级通道，不跟固件镜像里的版本）──────────────────
   # 合并前的 check-roceos.yml + sync-roceos.yml：核对 → 重建载荷 → 发本仓 release
-  # → 改三处 pin（扩展常量 / 本文件的 curl 校验 / official-roceos.txt）→ 推送。
+  # → 改两处 pin（扩展常量 / official-roceos.txt）→ 推送。本文件不含 pin（运行时读 txt）。
   roceos:
-    name: roceos 跟版（核对 → 重建载荷 → 发 release → 改三处 pin）
+    name: roceos 跟版（核对 → 重建载荷 → 发 release → 改两处 pin）
     needs: upstream
     # 上游比对失败（403 / 网络抖动）不该吞掉跟版与构建；被 cancel 时才停。
     if: |
@@ -153,7 +153,7 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "镜像内置 roceos = ${v}"
 
-      - name: 跟版（下官方包 → 按安装映射重建载荷 → 改三处 pin）
+      - name: 跟版（下官方包 → 按安装映射重建载荷 → 改两处 pin）
         id: sync
         # 手动「只检查」模式不写仓库；其余一律试一次（已是最新时 rc=0，几秒退出）
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.task != 'check' }}
@@ -168,7 +168,7 @@ jobs:
             *)  echo "!! 跟版失败（rc=$rc）"; exit "$rc" ;;
           esac
 
-      - name: 发本仓 release + 提交三处 pin + 推回主干
+      - name: 发本仓 release + 提交 pin + 推回主干
         if: steps.sync.outputs.new == '1'
         run: |
           set -eu
@@ -186,14 +186,21 @@ jobs:
               --notes "$NOTE"
           fi
 
-          # ② 提交三处 pin（载荷与 .roceos-sync.env 在 .gitignore 里）
+          # ② 提交 pin：只 add 跟版脚本真正会改的那两个文件。
+          #    绝不能把 .github/workflows/** 带进这次推送 —— GITHUB_TOKEN 没有 workflows
+          #    权限，带上必被 GitHub 拒，整条跟版链就红在这最后一步（2026-11-02 实录）。
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
+          git add extensions/lyw-rr-roceos.sh official-roceos.txt
           if git diff --cached --quiet; then
             echo "pin 没有变化（可能已同步过），跳过提交"
           else
-            git commit -m "chore(roceos): 跟官方 $NEW_VERSION —— 载荷重建 + 三处 pin 同步（自动）"
+            if git diff --cached --name-only | grep -qE '^\.github/workflows/'; then
+              echo "!! 这次提交会改到 workflow（GITHUB_TOKEN 无 workflows 权限 ⇒ 推送必被拒）:"
+              git diff --cached --name-only | grep -E '^\.github/workflows/'
+              exit 1
+            fi
+            git commit -m "chore(roceos): 跟官方 $NEW_VERSION —— 载荷重建 + pin 同步（自动）"
             # 显式写 ref：checkout 出来的可能是 detached HEAD，裸 `git push` 会报
             # "You are not currently on a branch"。
             git push origin HEAD:${GITHUB_REF_NAME}
@@ -509,9 +516,26 @@ jobs:
         run: |
           set -e
           mkdir -p build/userpatches/overlay
-          URL="https://github.com/linyueweia/lyw-rr/releases/download/roceos-payload-v2/roceos-payload.tar.gz"
-          curl -fsSL -o build/userpatches/overlay/roceos-payload.tar.gz "$URL"
-          echo "cbd911c6fad5a3655bc52a39e4099b8812c70d8358840e1d1d8bf6db956703d1  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
+          # ── 载荷 pin 的唯一真源 = rr/official-roceos.txt ──────────────────────────────
+          # 不在 workflow 里写死 URL/sha：GITHUB_TOKEN 是 GitHub App token，**没有 workflows
+          # 权限**，任何包含 .github/workflows/** 改动的推送都会被 GitHub 拒绝：
+          #   remote rejected: refusing to allow a GitHub App to create or update workflow
+          #   `.github/workflows/build.yml` without `workflows` permission
+          # ⇒ 自动跟版会红在最后一步、pin 永远落不了地（2026-11-02 跟 3.0.3 实录）。
+          # 所以 pin 只存两处：本 txt（真源）+ 扩展里的 ROCEOS_PAYLOAD_SHA256（构建期自证）。
+          PIN=rr/official-roceos.txt
+          URL=$(sed -n 's/^payload_url:[[:space:]]*//p' "$PIN" | head -1)
+          SHA=$(sed -n 's/^payload_sha256:[[:space:]]*//p' "$PIN" | head -1)
+          [ -n "$URL" ] && [ -n "$SHA" ] || { echo "!! $PIN 缺 payload_url / payload_sha256"; exit 1; }
+          # 两处 pin 必须同值（漂移即红，别等到镜像自证才发现）
+          grep -qF "$SHA" rr/extensions/lyw-rr-roceos.sh \
+            || { echo "!! 扩展里的 ROCEOS_PAYLOAD_SHA256 与 $PIN 不一致"; exit 1; }
+          echo "载荷 $URL"
+          echo "期望 sha256 $SHA"
+          mkdir -p build/userpatches/overlay
+          # 下载会静默截断（实测 92MB 只下到 67MB 而 urlopen 正常返回）⇒ 重试 + sha 双校验
+          curl -fsSL --retry 3 --retry-delay 2 -o build/userpatches/overlay/roceos-payload.tar.gz "$URL"
+          echo "$SHA  build/userpatches/overlay/roceos-payload.tar.gz" | sha256sum -c -
           ls -l build/userpatches/overlay/
 
       - name: Set up QEMU (binfmt_misc for arm64 cross-build)
