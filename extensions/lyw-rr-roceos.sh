@@ -21,7 +21,7 @@
 # ══════════════════════════════════════════════════════════════════════════
 
 # 载荷 sha256（= lyw-OS release roceos-payload-v2；内容一变就报错）
-ROCEOS_PAYLOAD_SHA256="860553e24546d13239b98d2985b19305743443f30246240339fa111018143886"
+ROCEOS_PAYLOAD_SHA256="d9d742f70b8becb064e4870ac7127cef4e798641ce707166fa280e214a2345e4"
 
 function post_post_debootstrap_tweaks__lyw_rr_roceos() {
 	display_alert "Installing roceos web UI (NanoPi R5S)" "$EXTENSION" "info"
