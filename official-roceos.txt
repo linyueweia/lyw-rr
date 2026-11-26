@@ -20,12 +20,12 @@
 #           镜像内 /opt/roceos/roceos = 04c432c237eea90b…（2.9.x），且没有 version.json（未 OTA 过）。
 #           ⇒ 「跟官方当前版本」应以更新服务器/实机 OTA 后的版本为准，不是镜像里的版本。
 
-version: 3.0.10
+version: 3.0.11
 channel: stable_arm（设备显示「稳定版」）
 arch: arm64
-payload: roceos-payload-3.0.10
-payload_url: https://github.com/linyueweia/lyw-rr/releases/download/roceos-payload-3.0.10/roceos-payload.tar.gz
-payload_sha256: eb15481693f65b828778cc0252d60649f0e924824def1f17783845c28e5184c0
-roceos_sha256: 4b683715138b89bd9c37c0debca038124562d16faca1aeb53900305dc8c65cba
+payload: roceos-payload-3.0.11
+payload_url: https://github.com/linyueweia/lyw-rr/releases/download/roceos-payload-3.0.11/roceos-payload.tar.gz
+payload_sha256: 738402544f599cd79fafc3ba65db9af95982c8559e3f07314f6412551cef9d69
+roceos_sha256: f0946bad5af960674133c80c1e0dd3cfd0b05bb585fa0f8d90bf979ebe6a934b
 roceos_size: 78465448
-synced_from: http://update.roceos.com:14380/api/v1/updates/packages/roceos-v3.0.10-arm64.tar.gz
+synced_from: http://update.roceos.com:14380/api/v1/updates/packages/roceos-v3.0.11-arm64.tar.gz
